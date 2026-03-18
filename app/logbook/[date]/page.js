@@ -8,29 +8,23 @@ import BottomNav from '@/app/components/BottomNav'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
-const GRADE_COLORS = {
-  V0: 'bg-green-600', V1: 'bg-green-500', V2: 'bg-lime-500',
-  V3: 'bg-yellow-500', V4: 'bg-orange-400', V5: 'bg-orange-500',
-  V6: 'bg-red-500', V7: 'bg-red-600', V8: 'bg-rose-700',
-  V9: 'bg-pink-700', V10: 'bg-purple-600', V11: 'bg-purple-700',
-  V12: 'bg-violet-700', V13: 'bg-indigo-700', V14: 'bg-blue-700',
-  V15: 'bg-sky-700', V16: 'bg-cyan-700', V17: 'bg-teal-700',
+const CLIMB_COLORS = {
+  red:    '#C0392B',
+  blue:   '#2471A3',
+  green:  '#1E8449',
+  yellow: '#D4AC0D',
+  orange: '#CA6F1E',
+  purple: '#7D3C98',
+  pink:   '#C0527A',
+  white:  '#D5D8DC',
+  gray:   '#707B7C',
+  black:  '#2C3E50',
+  tan:    '#C4A882',
 }
 
-function gradeColor(grade) {
-  if (!grade) return 'bg-zinc-600'
-  const upper = grade.toUpperCase()
-  if (GRADE_COLORS[upper]) return GRADE_COLORS[upper]
-  if (upper.startsWith('5.5') || upper.startsWith('5.6')) return 'bg-green-600'
-  if (upper.startsWith('5.7') || upper.startsWith('5.8')) return 'bg-lime-500'
-  if (upper.startsWith('5.9'))  return 'bg-yellow-500'
-  if (upper.startsWith('5.10')) return 'bg-orange-400'
-  if (upper.startsWith('5.11')) return 'bg-orange-500'
-  if (upper.startsWith('5.12')) return 'bg-red-500'
-  if (upper.startsWith('5.13')) return 'bg-rose-700'
-  if (upper.startsWith('5.14')) return 'bg-purple-600'
-  if (upper.startsWith('5.15')) return 'bg-indigo-700'
-  return 'bg-zinc-600'
+function climbColor(color) {
+  if (!color) return '#52525b'
+  return CLIMB_COLORS[color.toLowerCase()] ?? '#52525b'
 }
 
 // Format a YYYY-MM-DD key as "17 Mar 2026"
@@ -86,7 +80,7 @@ export default function SessionDetailPage() {
 
       const { data } = await supabase
         .from('ascents')
-        .select('id, climbed_at, status, tries, difficulty_rating, rating, notes, climbs(name, grade)')
+        .select('id, climbed_at, status, tries, difficulty_rating, rating, notes, climbs(id, grade, color)')
         .eq('user_id', user.id)
         .gte('climbed_at', start)
         .lt('climbed_at', next)
@@ -134,21 +128,22 @@ export default function SessionDetailPage() {
           <ul className="mx-4 mt-4 bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden">
             {ascents.map((ascent, index) => {
               const grade = ascent.climbs?.grade
-              const name = ascent.climbs?.name ?? 'Unknown climb'
+              const color = ascent.climbs?.color
               return (
                 <li key={ascent.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
                   <div className="flex items-start gap-3 px-4 py-4">
-                    {/* Grade badge */}
-                    <span className={`shrink-0 mt-0.5 ${gradeColor(grade)} text-white text-xs font-bold px-2.5 py-1 rounded-full`}>
-                      {grade ?? '?'}
-                    </span>
+                    {/* Colored square — primary climb identifier */}
+                    <div
+                      className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center"
+                      style={{ backgroundColor: climbColor(color) }}
+                    >
+                      <span className="text-white font-bold text-sm leading-none">{grade ?? '?'}</span>
+                    </div>
 
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-zinc-100 text-sm truncate">{name}</p>
-
                       {/* Tries */}
                       {ascent.tries != null && ascent.tries > 0 && (
-                        <p className="text-xs text-zinc-500 mt-1">
+                        <p className="text-xs text-zinc-500">
                           {ascent.tries} {ascent.tries === 1 ? 'try' : 'tries'}
                         </p>
                       )}

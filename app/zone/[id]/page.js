@@ -29,6 +29,25 @@ const GRADE_RANGES = {
 
 const TAG_OPTIONS = ['Crimpy', 'Slopey', 'Juggy', 'Overhang', 'Slab']
 
+const CLIMB_COLORS = {
+  red:    '#C0392B',
+  blue:   '#2471A3',
+  green:  '#1E8449',
+  yellow: '#D4AC0D',
+  orange: '#CA6F1E',
+  purple: '#7D3C98',
+  pink:   '#C0527A',
+  white:  '#D5D8DC',
+  gray:   '#707B7C',
+  black:  '#2C3E50',
+  tan:    '#C4A882',
+}
+
+function climbColor(color) {
+  if (!color) return '#52525b'
+  return CLIMB_COLORS[color.toLowerCase()] ?? '#52525b'
+}
+
 function gradeColor(grade) {
   if (!grade) return 'bg-zinc-600'
   const upper = grade.toUpperCase()
@@ -207,7 +226,7 @@ export default function ZonePage() {
     async function fetchData() {
       const [{ data: zoneData }, { data: climbData }] = await Promise.all([
         supabase.from('zones').select('*').eq('id', id).single(),
-        supabase.from('climbs').select('*').eq('zone_id', id).order('name', { ascending: true }),
+        supabase.from('climbs').select('*').eq('zone_id', id),
       ])
       if (zoneData) setZone(zoneData)
       if (climbData) setClimbs(climbData)
@@ -258,6 +277,7 @@ export default function ZonePage() {
             <h1 className="text-base font-semibold text-zinc-100 truncate">
               {zone?.name ?? 'Zone'}
             </h1>
+            <p className="text-xs text-zinc-600 leading-none mt-0.5">left → right</p>
           </div>
 
           {!loading && (
@@ -307,38 +327,51 @@ export default function ZonePage() {
             {filtered.map((climb, index) => (
               <li key={climb.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
                 <div className="flex items-center gap-3 px-4 py-3.5">
+                  {/* Colored shape — primary climb identifier */}
+                  <button
+                    onClick={() => router.push(`/climb/${climb.id}`)}
+                    className="shrink-0"
+                    aria-label={`View climb ${climb.grade ?? ''}`}
+                  >
+                    <div
+                      className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                      style={{ backgroundColor: climbColor(climb.color) }}
+                    >
+                      <span className="text-white font-bold text-sm leading-none">{climb.grade || '?'}</span>
+                    </div>
+                  </button>
+
+                  {/* Tags + repeat count */}
                   <button
                     onClick={() => router.push(`/climb/${climb.id}`)}
                     className="flex-1 min-w-0 text-left"
-                    aria-label={`View ${climb.name}`}
                   >
-                    <p className="font-medium text-zinc-100 truncate">{climb.name}</p>
-                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                      {climb.grade && (
-                        <span className={`${gradeColor(climb.grade)} text-white text-xs font-bold px-2 py-0.5 rounded-full`}>
-                          {climb.grade}
-                        </span>
-                      )}
-                      {Array.isArray(climb.tags) && climb.tags.map((tag) => (
-                        <span key={tag} className="bg-zinc-800 text-zinc-400 text-xs px-2 py-0.5 rounded-full">
-                          {tag}
-                        </span>
-                      ))}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {Array.isArray(climb.tags) && climb.tags.length > 0
+                        ? climb.tags.map((tag) => (
+                            <span key={tag} className="bg-zinc-800 text-zinc-400 text-xs px-2 py-0.5 rounded-full">
+                              {tag}
+                            </span>
+                          ))
+                        : <span className="text-zinc-600 text-xs">No tags</span>
+                      }
                     </div>
-                    <p className="text-xs text-zinc-600 mt-1">0 repeats</p>
+                    <p className="text-xs text-zinc-600 mt-1.5">
+                      {(climb.repeat_count ?? 0) === 0 ? 'No repeats' : `${climb.repeat_count} ${climb.repeat_count === 1 ? 'repeat' : 'repeats'}`}
+                    </p>
                   </button>
 
                   <div className="shrink-0 flex items-center gap-1">
                     <button
                       onClick={() => {/* TODO: log ascent */}}
                       className="p-2 text-zinc-500 hover:text-zinc-200 active:scale-90 transition-all rounded-lg hover:bg-zinc-800"
-                      aria-label={`Log ascent for ${climb.name}`}
+                      aria-label="Log ascent"
                     >
                       <PlusIcon />
                     </button>
                     <button
                       className="p-2 text-zinc-500 hover:text-rose-400 active:scale-90 transition-all rounded-lg hover:bg-zinc-800"
-                      aria-label={`Favourite ${climb.name}`}
+                      aria-label="Favourite"
                     >
                       <HeartIcon />
                     </button>
