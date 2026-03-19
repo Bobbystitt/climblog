@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import ResumeBanner from '@/app/components/ResumeBanner'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -215,12 +216,27 @@ export default function ZonePage() {
   const [climbs, setClimbs] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [userRole, setUserRole] = useState(null)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [activeGrade, setActiveGrade] = useState('All')
   const [activeTags, setActiveTags] = useState([])
 
   const hasActiveFilters = activeGrade !== 'All' || activeTags.length > 0
+
+  useEffect(() => {
+    async function fetchProfile() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+      if (profile) setUserRole(profile.role)
+    }
+    fetchProfile()
+  }, [])
+
+  useEffect(() => {
+    if (id) localStorage.setItem('savedPath', `/zone/${id}`)
+  }, [id])
 
   useEffect(() => {
     async function fetchData() {
@@ -316,6 +332,7 @@ export default function ZonePage() {
 
       {/* Climb list */}
       <div className="flex-1 overflow-y-auto pb-20">
+        <ResumeBanner />
         {loading ? (
           <p className="text-center text-zinc-500 mt-12 text-sm">Loading...</p>
         ) : filtered.length === 0 ? (
@@ -382,6 +399,17 @@ export default function ZonePage() {
           </ul>
         )}
       </div>
+
+      {/* Add Climb FAB — setters and admins only */}
+      {(userRole === 'setter' || userRole === 'admin') && (
+        <button
+          onClick={() => router.push(`/climb/new?zone_id=${id}`)}
+          className="fixed bottom-20 right-4 z-30 w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-500 active:scale-90 transition-all flex items-center justify-center shadow-lg shadow-indigo-900/50 text-white"
+          aria-label="Add climb"
+        >
+          <PlusIcon />
+        </button>
+      )}
 
       <FilterDrawer
         open={drawerOpen}

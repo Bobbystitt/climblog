@@ -61,7 +61,7 @@ export default function ProfilePage() {
       // Fetch profile row
       const { data: profileData } = await supabase
         .from('profiles')
-        .select('*')
+        .select('first_name, last_name, username, avatar_url')
         .eq('id', user.id)
         .single()
       setProfile(profileData)
@@ -129,8 +129,18 @@ export default function ProfilePage() {
       <div className="flex-1 overflow-y-auto pb-24">
         {/* Avatar + name */}
         <div className="flex flex-col items-center pt-8 pb-6 px-4">
-          <div className="w-20 h-20 rounded-full bg-indigo-600/20 border-2 border-indigo-500/30 flex items-center justify-center mb-3">
-            <span className="text-indigo-300 font-bold text-2xl">{initials}</span>
+          <div className="w-20 h-20 rounded-full mb-3 overflow-hidden">
+            {profile?.avatar_url ? (
+              <img
+                src={profile.avatar_url}
+                alt="Avatar"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full bg-indigo-600/20 border-2 border-indigo-500/30 rounded-full flex items-center justify-center">
+                <span className="text-indigo-300 font-bold text-2xl">{initials}</span>
+              </div>
+            )}
           </div>
           {fullName && <p className="text-lg font-bold text-zinc-100">{fullName}</p>}
           <p className="text-sm text-zinc-500 mt-0.5">@{displayUsername}</p>

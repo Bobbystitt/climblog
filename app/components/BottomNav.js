@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600'] })
@@ -50,6 +50,18 @@ const TABS = [
 
 export default function BottomNav() {
   const pathname = usePathname()
+  const router = useRouter()
+
+  function handleHomeClick(e) {
+    e.preventDefault()
+    const saved = localStorage.getItem('savedPath')
+    if (saved) {
+      localStorage.setItem('resumeActive', '1')
+      router.push(saved)
+    } else {
+      router.push('/dashboard')
+    }
+  }
 
   return (
     <div className={`${poppins.className} fixed bottom-0 left-0 right-0 z-30 bg-zinc-950 border-t border-zinc-800`}>
@@ -60,6 +72,7 @@ export default function BottomNav() {
             <Link
               key={href}
               href={href}
+              onClick={label === 'Home' ? handleHomeClick : undefined}
               className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 transition-colors ${
                 active ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
               }`}

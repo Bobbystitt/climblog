@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import ResumeBanner from '@/app/components/ResumeBanner'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -31,6 +32,14 @@ function BackIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+    </svg>
+  )
+}
+
+function PencilIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
     </svg>
   )
 }
@@ -213,6 +222,21 @@ export default function ClimbPage() {
   const [attempts, setAttempts] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
   const [toast, setToast] = useState(false)
+  const [userRole, setUserRole] = useState(null)
+
+  useEffect(() => {
+    async function fetchProfile() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+      if (profile) setUserRole(profile.role)
+    }
+    fetchProfile()
+  }, [])
+
+  useEffect(() => {
+    if (id) localStorage.setItem('savedPath', `/climb/${id}`)
+  }, [id])
 
   useEffect(() => {
     async function fetchClimb() {
@@ -262,10 +286,20 @@ export default function ClimbPage() {
         <h1 className="flex-1 text-base font-semibold text-zinc-100 truncate">
           {climb.grade || 'Unknown Grade'}
         </h1>
+        {(userRole === 'setter' || userRole === 'admin') && (
+          <button
+            onClick={() => router.push(`/climb/${id}/edit`)}
+            className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-1.5 rounded-lg hover:bg-zinc-800"
+            aria-label="Edit climb"
+          >
+            <PencilIcon />
+          </button>
+        )}
       </div>
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto pb-40">
+        <ResumeBanner />
         {/* Climb identifier — large colored shape */}
         <div className="flex justify-center mt-8 mb-2">
           <div

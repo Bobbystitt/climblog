@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import ResumeBanner from '@/app/components/ResumeBanner'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -38,6 +39,10 @@ export default function GymPage() {
   const [gym, setGym] = useState(null)
   const [zones, setZones] = useState([])
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (id) localStorage.setItem('savedPath', `/gym/${id}`)
+  }, [id])
 
   useEffect(() => {
     async function fetchData() {
@@ -77,6 +82,7 @@ export default function GymPage() {
 
       {/* Zone list */}
       <div className="flex-1 overflow-y-auto pb-24">
+        <ResumeBanner />
         {loading ? (
           <div className="flex items-center justify-center mt-16">
             <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />
