@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
-import ResumeBanner from '@/app/components/ResumeBanner'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -63,7 +62,7 @@ export default function GymPage() {
       <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
         <div className="flex items-center gap-3 px-4 py-3">
           <button
-            onClick={() => router.back()}
+            onClick={() => router.push('/dashboard')}
             className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
             aria-label="Go back"
           >
@@ -82,7 +81,6 @@ export default function GymPage() {
 
       {/* Zone list */}
       <div className="flex-1 overflow-y-auto pb-24">
-        <ResumeBanner />
         {loading ? (
           <div className="flex items-center justify-center mt-16">
             <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />

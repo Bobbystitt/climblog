@@ -50,6 +50,7 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState(null)
   const [user, setUser] = useState(null)
   const [lastSessionChart, setLastSessionChart] = useState([])
+  const [stats, setStats] = useState({ totalSends: 0, topGrade: null, sessions: 0 })
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -66,17 +67,36 @@ export default function ProfilePage() {
         .single()
       setProfile(profileData)
 
-      // Fetch ascents to find last session date
+      // Fetch ascents
       const { data: ascents } = await supabase
         .from('ascents')
         .select('*, climbs(grade)')
         .eq('user_id', user.id)
-        .order('date', { ascending: false })
+        .order('climbed_at', { ascending: false })
 
       const all = ascents ?? []
+
+      // ── Stats ──────────────────────────────────────────────────────────────
+      function gradeRank(grade) {
+        if (!grade) return -1
+        const upper = grade.toUpperCase()
+        if (upper === 'VB') return 0
+        const m = upper.match(/^V(\d+)$/)
+        return m ? parseInt(m[1]) + 1 : -1
+      }
+
+      const sends = all.filter(a => a.status === 'sent')
+      const topGradeEntry = sends.reduce((best, a) => {
+        const g = a.climbs?.grade
+        return gradeRank(g) > gradeRank(best) ? g : best
+      }, null)
+      const sessionDates = new Set(all.map(a => a.climbed_at?.slice(0, 10)).filter(Boolean))
+      setStats({ totalSends: sends.length, topGrade: topGradeEntry, sessions: sessionDates.size })
+      // ───────────────────────────────────────────────────────────────────────
+
       if (all.length > 0) {
-        const lastDate = all[0].date
-        const lastSession = all.filter(a => a.date === lastDate)
+        const lastDate = all[0].climbed_at?.slice(0, 10)
+        const lastSession = all.filter(a => a.climbed_at?.slice(0, 10) === lastDate)
 
         // Tally sends by grade for last session
         const vGrades = ['V0','V1','V2','V3','V4','V5','V6','V7','V8','V9','V10','V11','V12','V13','V14','V15','V16','V17']
@@ -146,6 +166,20 @@ export default function ProfilePage() {
           <p className="text-sm text-zinc-500 mt-0.5">@{displayUsername}</p>
         </div>
 
+        {/* Stats summary */}
+        <div className="grid grid-cols-3 gap-2 mx-4 mb-4">
+          {[
+            { label: 'Total Sends', value: stats.totalSends },
+            { label: 'Top Grade',   value: stats.topGrade ?? '—' },
+            { label: 'Sessions',    value: stats.sessions },
+          ].map(({ label, value }) => (
+            <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl px-2 py-2.5 flex flex-col items-center gap-0.5">
+              <span className="text-base font-bold text-zinc-100 leading-tight">{value}</span>
+              <span className="text-[10px] font-medium text-zinc-500 text-center leading-tight">{label}</span>
+            </div>
+          ))}
+        </div>
+
         {/* Last session chart */}
         {lastSessionChart.length > 0 && (
           <div className="mx-4 mb-4 bg-zinc-900 rounded-2xl border border-zinc-800 p-4">
@@ -176,7 +210,7 @@ export default function ProfilePage() {
           </div>
         )}
 
-        {lastSessionChart.length === 0 && (
+        {lastSessionChart.length === 0 && stats.totalSends === 0 && (
           <div className="mx-4 mb-4 bg-zinc-900 rounded-2xl border border-zinc-800 p-6 flex items-center justify-center">
             <p className="text-zinc-600 text-sm">No sessions logged yet</p>
           </div>

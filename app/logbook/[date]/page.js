@@ -107,7 +107,7 @@ export default function SessionDetailPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800 flex items-center gap-3 px-4 py-3">
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push('/logbook')}
           className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
           aria-label="Go back"
         >

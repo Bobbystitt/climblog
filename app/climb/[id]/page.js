@@ -1,11 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
-import ResumeBanner from '@/app/components/ResumeBanner'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -45,6 +44,23 @@ function PencilIcon() {
 }
 
 
+function XIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  )
+}
+
+function CameraIcon({ className = 'w-5 h-5' }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z" />
+    </svg>
+  )
+}
+
 function RepeatIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
@@ -82,8 +98,125 @@ function StarRating({ value, onChange, color = 'text-yellow-400' }) {
   )
 }
 
+function PhotoModal({ url, onClose }) {
+  const containerRef = useRef(null)
+  const gestureRef = useRef({
+    scale: 1, tx: 0, ty: 0,
+    isPinching: false,
+    initDist: 0, initScale: 1,
+    initTx: 0, initTy: 0,
+    initX: 0, initY: 0,
+  })
+  const [transform, setTransform] = useState({ scale: 1, tx: 0, ty: 0 })
+
+  // Lock body scroll while open
+  useEffect(() => {
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = '' }
+  }, [])
+
+  // Native touch listeners so we can call preventDefault on touchmove
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function pinchDist(touches) {
+      const dx = touches[0].clientX - touches[1].clientX
+      const dy = touches[0].clientY - touches[1].clientY
+      return Math.sqrt(dx * dx + dy * dy)
+    }
+
+    function commit(scale, tx, ty) {
+      gestureRef.current.scale = scale
+      gestureRef.current.tx = tx
+      gestureRef.current.ty = ty
+      setTransform({ scale, tx, ty })
+    }
+
+    function onStart(e) {
+      const g = gestureRef.current
+      if (e.touches.length === 2) {
+        g.isPinching = true
+        g.initDist = pinchDist(e.touches)
+        g.initScale = g.scale
+        g.initTx = g.tx
+        g.initTy = g.ty
+      } else if (e.touches.length === 1) {
+        g.initX = e.touches[0].clientX
+        g.initY = e.touches[0].clientY
+        g.initTx = g.tx
+        g.initTy = g.ty
+      }
+    }
+
+    function onMove(e) {
+      e.preventDefault()
+      const g = gestureRef.current
+      if (e.touches.length === 2) {
+        const newScale = Math.min(4, Math.max(1, g.initScale * (pinchDist(e.touches) / g.initDist)))
+        commit(newScale, g.tx, g.ty)
+      } else if (e.touches.length === 1 && !g.isPinching && g.scale > 1) {
+        const dx = e.touches[0].clientX - g.initX
+        const dy = e.touches[0].clientY - g.initY
+        commit(g.scale, g.initTx + dx, g.initTy + dy)
+      }
+    }
+
+    function onEnd(e) {
+      if (e.touches.length < 2) gestureRef.current.isPinching = false
+      if (gestureRef.current.scale <= 1) commit(1, 0, 0)
+    }
+
+    el.addEventListener('touchstart', onStart, { passive: true })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd, { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', onStart)
+      el.removeEventListener('touchmove', onMove)
+      el.removeEventListener('touchend', onEnd)
+    }
+  }, [])
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-black flex items-center justify-center"
+      onClick={onClose}
+    >
+      {/* Close button */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onClose() }}
+        className="absolute top-4 right-4 z-10 w-10 h-10 rounded-full bg-zinc-900/80 backdrop-blur flex items-center justify-center text-zinc-300 hover:text-white active:scale-90 transition-all"
+        aria-label="Close"
+      >
+        <XIcon />
+      </button>
+
+      {/* Image container — touch-handled, click stops propagation to backdrop */}
+      <div
+        ref={containerRef}
+        className="w-full h-full flex items-center justify-center overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={url}
+          alt="Climb photo"
+          draggable={false}
+          className="w-full max-h-screen object-contain select-none"
+          style={{
+            transform: `translate(${transform.tx}px, ${transform.ty}px) scale(${transform.scale})`,
+            transformOrigin: 'center center',
+            touchAction: 'none',
+            willChange: 'transform',
+            userSelect: 'none',
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
 function LogAscentModal({ climbId, initialAttempts, currentRepeatCount, onClose, onSaved }) {
-  const [attempts, setAttempts] = useState(initialAttempts)
+  const [attempts, setAttempts] = useState(Math.max(1, initialAttempts))
   const [difficulty, setDifficulty] = useState(0)
   const [rating, setRating] = useState(0)
   const [notes, setNotes] = useState('')
@@ -153,7 +286,7 @@ function LogAscentModal({ climbId, initialAttempts, currentRepeatCount, onClose,
             <div className="flex items-center gap-4">
               <button
                 type="button"
-                onClick={() => setAttempts(a => Math.max(0, a - 1))}
+                onClick={() => setAttempts(a => Math.max(1, a - 1))}
                 className="w-10 h-10 rounded-full bg-zinc-800 hover:bg-zinc-700 active:scale-90 transition-all flex items-center justify-center text-zinc-300 text-xl font-light"
               >
                 −
@@ -213,6 +346,37 @@ function LogAscentModal({ climbId, initialAttempts, currentRepeatCount, onClose,
   )
 }
 
+function ProjectConfirmModal({ attempts, onYes, onNo, saving }) {
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/70" />
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
+        <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 w-full max-w-sm flex flex-col gap-4">
+          <h2 className="text-base font-bold text-zinc-100">Log your attempts?</h2>
+          <p className="text-sm text-zinc-400 leading-relaxed">
+            You have {attempts} {attempts === 1 ? 'attempt' : 'attempts'} on this climb. Want to save them to your logbook?
+          </p>
+          <div className="flex gap-3 mt-1">
+            <button
+              onClick={onNo}
+              className="flex-1 py-3 rounded-xl bg-zinc-800 text-zinc-300 text-sm font-semibold hover:bg-zinc-700 active:scale-[0.98] transition-all"
+            >
+              No
+            </button>
+            <button
+              onClick={onYes}
+              disabled={saving}
+              className="flex-1 py-3 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-500 active:scale-[0.98] disabled:opacity-50 transition-all"
+            >
+              {saving ? 'Saving…' : 'Yes'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export default function ClimbPage() {
   const { id } = useParams()
   const router = useRouter()
@@ -223,6 +387,11 @@ export default function ClimbPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [toast, setToast] = useState(false)
   const [userRole, setUserRole] = useState(null)
+  const [confirmNav, setConfirmNav] = useState(null) // { destination } when showing guard
+  const [confirmSaving, setConfirmSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [photoModalOpen, setPhotoModalOpen] = useState(false)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     async function fetchProfile() {
@@ -253,6 +422,62 @@ export default function ClimbPage() {
     if (id) fetchClimb()
   }, [id])
 
+  async function handlePhotoUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+
+    const ext = file.name.split('.').pop()
+    const path = `${id}-${Date.now()}.${ext}`
+
+    const { error: uploadError } = await supabase.storage
+      .from('climb-photos')
+      .upload(path, file, { upsert: true })
+
+    if (uploadError) {
+      setUploading(false)
+      e.target.value = ''
+      return
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('climb-photos')
+      .getPublicUrl(path)
+
+    await supabase.from('climbs').update({ photo_url: publicUrl }).eq('id', id)
+    setClimb(c => ({ ...c, photo_url: publicUrl }))
+    setUploading(false)
+    e.target.value = ''
+  }
+
+  function navigate(destination) {
+    if (attempts > 0) {
+      setConfirmNav({ destination })
+    } else {
+      router.push(destination)
+    }
+  }
+
+  async function handleConfirmYes() {
+    setConfirmSaving(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      await supabase.from('ascents').insert({
+        user_id: user.id,
+        climb_id: id,
+        tries: attempts,
+        status: 'project',
+        climbed_at: new Date().toISOString(),
+      })
+    }
+    setConfirmSaving(false)
+    router.push(confirmNav.destination)
+  }
+
+  function handleConfirmNo() {
+    router.push(confirmNav.destination)
+  }
+
   if (loading) {
     return (
       <div className={`${poppins.className} min-h-screen bg-zinc-950 flex items-center justify-center`}>
@@ -265,7 +490,7 @@ export default function ClimbPage() {
     return (
       <div className={`${poppins.className} min-h-screen bg-zinc-950 flex flex-col items-center justify-center gap-4`}>
         <p className="text-zinc-400 text-sm">Climb not found.</p>
-        <button onClick={() => router.back()} className="text-zinc-500 text-sm underline">Go back</button>
+        <button onClick={() => router.push('/dashboard')} className="text-zinc-500 text-sm underline">Go back</button>
       </div>
     )
   }
@@ -277,7 +502,7 @@ export default function ClimbPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800 flex items-center gap-3 px-4 py-3">
         <button
-          onClick={() => router.back()}
+          onClick={() => navigate(`/zone/${climb.zone_id}`)}
           className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
           aria-label="Go back"
         >
@@ -299,15 +524,51 @@ export default function ClimbPage() {
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto pb-40">
-        <ResumeBanner />
-        {/* Climb identifier — large colored shape */}
-        <div className="flex justify-center mt-8 mb-2">
+        {/* Photo area */}
+        <div className="relative w-full h-56 bg-zinc-800 overflow-hidden">
+          {climb.photo_url ? (
+            <img
+              src={climb.photo_url}
+              alt="Climb photo"
+              onClick={() => setPhotoModalOpen(true)}
+              className="w-full h-full object-cover cursor-pointer"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <CameraIcon className="w-10 h-10 text-zinc-600" />
+            </div>
+          )}
+
+          {/* Grade badge overlaid bottom-left */}
           <div
-            className="w-32 h-32 rounded-3xl flex items-center justify-center shadow-2xl"
+            className="absolute bottom-3 left-3 w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg"
             style={{ backgroundColor: climbColor(climb.color) }}
           >
-            <span className="text-white font-bold text-3xl leading-none">{climb.grade || '?'}</span>
+            <span className="text-white font-bold text-sm leading-none">{climb.grade || '?'}</span>
           </div>
+
+          {/* Upload button — setter/admin only */}
+          {(userRole === 'setter' || userRole === 'admin') && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-zinc-900/80 backdrop-blur flex items-center justify-center text-zinc-300 hover:text-zinc-100 active:scale-90 transition-all disabled:opacity-50"
+              aria-label="Upload photo"
+            >
+              {uploading
+                ? <div className="w-5 h-5 rounded-full border-2 border-zinc-600 border-t-zinc-200 animate-spin" />
+                : <CameraIcon />
+              }
+            </button>
+          )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handlePhotoUpload}
+          />
         </div>
 
         {/* Climb info */}
@@ -373,7 +634,7 @@ export default function ClimbPage() {
         </div>
       </div>
 
-      <BottomNav />
+      <BottomNav onNavigate={navigate} />
 
       {/* Success toast */}
       {toast && (
@@ -383,6 +644,21 @@ export default function ClimbPage() {
           </svg>
           <span className="text-sm font-medium text-zinc-100">Ascent logged!</span>
         </div>
+      )}
+
+      {/* Photo lightbox */}
+      {photoModalOpen && climb.photo_url && (
+        <PhotoModal url={climb.photo_url} onClose={() => setPhotoModalOpen(false)} />
+      )}
+
+      {/* Project confirm modal */}
+      {confirmNav && (
+        <ProjectConfirmModal
+          attempts={attempts}
+          saving={confirmSaving}
+          onYes={handleConfirmYes}
+          onNo={handleConfirmNo}
+        />
       )}
 
       {/* Log Ascent modal */}

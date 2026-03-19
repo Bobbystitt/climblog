@@ -48,18 +48,21 @@ const TABS = [
   { label: 'Profile',  href: '/profile',   Icon: ProfileIcon,  match: (p) => p.startsWith('/profile') },
 ]
 
-export default function BottomNav() {
+export default function BottomNav({ onNavigate }) {
   const pathname = usePathname()
   const router = useRouter()
 
-  function handleHomeClick(e) {
-    e.preventDefault()
-    const saved = localStorage.getItem('savedPath')
-    if (saved) {
-      localStorage.setItem('resumeActive', '1')
-      router.push(saved)
-    } else {
-      router.push('/dashboard')
+  function handleTabClick(e, href, label) {
+    if (label === 'Home') {
+      e.preventDefault()
+      const saved = localStorage.getItem('savedPath')
+      const dest = saved ?? '/dashboard'
+      if (saved) localStorage.setItem('resumeActive', '1')
+      if (onNavigate) onNavigate(dest)
+      else router.push(dest)
+    } else if (onNavigate) {
+      e.preventDefault()
+      onNavigate(href)
     }
   }
 
@@ -72,7 +75,7 @@ export default function BottomNav() {
             <Link
               key={href}
               href={href}
-              onClick={label === 'Home' ? handleHomeClick : undefined}
+              onClick={(e) => handleTabClick(e, href, label)}
               className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 transition-colors ${
                 active ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
               }`}

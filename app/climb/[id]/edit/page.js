@@ -184,7 +184,7 @@ export default function EditClimbPage() {
     return (
       <div className={`${poppins.className} min-h-screen bg-zinc-950 flex flex-col items-center justify-center gap-4`}>
         <p className="text-zinc-400 text-sm">Climb not found.</p>
-        <button onClick={() => router.back()} className="text-zinc-500 text-sm underline">Go back</button>
+        <button onClick={() => router.push('/dashboard')} className="text-zinc-500 text-sm underline">Go back</button>
       </div>
     )
   }
@@ -194,7 +194,7 @@ export default function EditClimbPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800 flex items-center gap-3 px-4 py-3">
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push(`/climb/${id}`)}
           className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
           aria-label="Go back"
         >
