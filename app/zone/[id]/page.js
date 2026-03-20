@@ -525,21 +525,14 @@ export default function ZonePage() {
   const [ascents, setAscents] = useState({})
   const [modalClimb, setModalClimb] = useState(null)
 
+  // Cache user id so toggleFavorite doesn't need to re-fetch auth on every tap
+  const currentUserId = useRef(null)
+
   const hasActiveFilters = (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) || activeTags.length > 0 || activeFavorites || statusFilter !== 'All'
 
   function getClimbStatus(climbId) {
     return ascents[climbId] ?? 'untouched'
   }
-
-  useEffect(() => {
-    async function fetchProfile() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
-      if (profile) setUserRole(profile.role)
-    }
-    fetchProfile()
-  }, [])
 
   useEffect(() => {
     if (id) localStorage.setItem('savedPath', `/zone/${id}`)
@@ -556,22 +549,42 @@ export default function ZonePage() {
       const climbList = climbData ?? []
       setClimbs(climbList)
 
-      if (user && climbList.length > 0) {
-        const { data: ascentData } = await supabase
-          .from('ascents')
-          .select('climb_id, status, tries')
-          .eq('user_id', user.id)
-          .in('climb_id', climbList.map(c => c.id))
+      if (user) {
+        currentUserId.current = user.id
 
-        const statusMap = {}
-        for (const a of (ascentData ?? [])) {
-          const s = rawAscentStatus(a)
-          const existing = statusMap[a.climb_id]
-          if (!existing || STATUS_PRIORITY[s] > STATUS_PRIORITY[existing]) {
-            statusMap[a.climb_id] = s
-          }
+        // Fetch role and zone-scoped favorites + ascents in parallel
+        const climbIds = climbList.map(c => c.id)
+        const queries = [
+          supabase.from('profiles').select('role').eq('id', user.id).single(),
+        ]
+        if (climbIds.length > 0) {
+          queries.push(
+            supabase.from('ascents').select('climb_id, status, tries')
+              .eq('user_id', user.id).in('climb_id', climbIds),
+            supabase.from('favorites').select('climb_id')
+              .eq('user_id', user.id).in('climb_id', climbIds),
+          )
         }
-        setAscents(statusMap)
+
+        const [profileRes, ascentRes, favRes] = await Promise.all(queries)
+
+        if (profileRes?.data) setUserRole(profileRes.data.role)
+
+        if (ascentRes?.data) {
+          const statusMap = {}
+          for (const a of ascentRes.data) {
+            const s = rawAscentStatus(a)
+            const existing = statusMap[a.climb_id]
+            if (!existing || STATUS_PRIORITY[s] > STATUS_PRIORITY[existing]) {
+              statusMap[a.climb_id] = s
+            }
+          }
+          setAscents(statusMap)
+        }
+
+        if (favRes?.data) {
+          setFavorites(new Set(favRes.data.map(f => f.climb_id)))
+        }
       }
 
       setLoading(false)
@@ -579,31 +592,26 @@ export default function ZonePage() {
     if (id) fetchData()
   }, [id])
 
-  // Fetch all favorites for this user on every mount so hearts always
-  // reflect true persisted state regardless of navigation history
-  useEffect(() => {
-    async function fetchFavorites() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase
-        .from('favorites')
-        .select('climb_id')
-        .eq('user_id', user.id)
-      setFavorites(new Set((data ?? []).map(f => f.climb_id)))
-    }
-    fetchFavorites()
-  }, [])
-
   async function toggleFavorite(climbId) {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    const userId = currentUserId.current
+    if (!userId) return
 
-    if (favorites.has(climbId)) {
-      await supabase.from('favorites').delete().eq('user_id', user.id).eq('climb_id', climbId)
-      setFavorites(prev => { const next = new Set(prev); next.delete(climbId); return next })
+    const isFav = favorites.has(climbId)
+
+    // Update local Set immediately (optimistic) so UI responds instantly
+    setFavorites(prev => {
+      const next = new Set(prev)
+      if (isFav) next.delete(climbId)
+      else next.add(climbId)
+      return next
+    })
+
+    // Persist to DB in the background
+    if (isFav) {
+      await supabase.from('favorites').delete()
+        .eq('user_id', userId).eq('climb_id', climbId)
     } else {
-      await supabase.from('favorites').insert({ user_id: user.id, climb_id: climbId })
-      setFavorites(prev => new Set([...prev, climbId]))
+      await supabase.from('favorites').insert({ user_id: userId, climb_id: climbId })
     }
   }
 

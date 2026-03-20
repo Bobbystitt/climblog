@@ -1,12 +1,34 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
+
+const GRADE_COLORS = {
+  VB: '#15803d',
+  V0: '#16a34a', V1: '#22c55e', V2: '#84cc16',
+  V3: '#eab308', V4: '#fb923c', V5: '#f97316',
+  V6: '#ef4444', V7: '#dc2626', V8: '#be123c',
+  V9: '#be185d', V10: '#9333ea',
+}
+
+const CHART_GRADES = ['VB','V0','V1','V2','V3','V4','V5','V6','V7','V8','V9','V10']
+
+const COLOR_HEX = {
+  red: '#C0392B', blue: '#2471A3', green: '#1E8449',
+  yellow: '#D4AC0D', orange: '#CA6F1E', purple: '#7D3C98',
+  pink: '#C0527A', white: '#D5D8DC', gray: '#707B7C',
+  black: '#2C3E50', tan: '#C4A882',
+}
+
+function colorHex(color) { return COLOR_HEX[color] ?? '#52525b' }
 
 function BackIcon() {
   return (
@@ -16,7 +38,25 @@ function BackIcon() {
   )
 }
 
-function ChevronIcon() {
+function CameraIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon({ open }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"
+      className={`w-4 h-4 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
       <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
@@ -32,82 +72,460 @@ function LayersIcon() {
   )
 }
 
+function StarIcon({ filled }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+      fill={filled ? '#eab308' : 'none'}
+      stroke={filled ? '#eab308' : '#3f3f46'}
+      strokeWidth={1.5}
+      className="w-3.5 h-3.5">
+      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+    </svg>
+  )
+}
+
+const CustomTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2">
+        <p className="text-xs text-zinc-300 font-semibold">{payload[0].payload.grade}</p>
+        <p className="text-xs text-zinc-400">{payload[0].value} climbs</p>
+      </div>
+    )
+  }
+  return null
+}
+
 export default function GymPage() {
   const { id } = useParams()
   const router = useRouter()
+  const fileInputRef = useRef(null)
+  const zonesRef = useRef(null)
+
   const [gym, setGym] = useState(null)
   const [zones, setZones] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState({ boulder: 0, lead: 0, topRope: 0 })
+  const [chartData, setChartData] = useState([])
+  const [topClimbs, setTopClimbs] = useState([])
+  const [climbRatings, setClimbRatings] = useState({})
+  // gymLoading: true only until the gym row itself arrives (controls hero render)
+  const [gymLoading, setGymLoading] = useState(true)
+  // contentLoading: true until zones/climbs/stats are ready (controls section skeletons)
+  const [contentLoading, setContentLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const [uploadingHero, setUploadingHero] = useState(false)
+  const [heroUrl, setHeroUrl] = useState(null)
 
   useEffect(() => {
-    if (id) localStorage.setItem('savedPath', `/gym/${id}`)
-  }, [id])
+    if (!id) return
+    localStorage.setItem('savedPath', `/gym/${id}`)
 
-  useEffect(() => {
-    async function fetchData() {
-      const [{ data: gymData }, { data: zoneData }] = await Promise.all([
-        supabase.from('gyms').select('*').eq('id', id).single(),
+    // Phase 1 — fetch gym record alone so the hero renders immediately
+    async function fetchGym() {
+      const { data: gymData } = await supabase
+        .from('gyms')
+        .select('*')
+        .eq('id', id)
+        .single()
+      if (gymData) {
+        setGym(gymData)
+        setHeroUrl(gymData.hero_image_url ?? null)
+      }
+      setGymLoading(false)
+    }
+
+    // Phase 2 — fetch everything else; runs in parallel with phase 1
+    async function fetchContent() {
+      const [
+        { data: { user } },
+        { data: zoneData },
+      ] = await Promise.all([
+        supabase.auth.getUser(),
         supabase.from('zones').select('*').eq('gym_id', id).order('name', { ascending: true }),
       ])
-      if (gymData) setGym(gymData)
-      setZones(zoneData ?? [])
-      setLoading(false)
+
+      const zonesArr = zoneData ?? []
+      setZones(zonesArr)
+
+      if (user) {
+        const { data: profile } = await supabase
+          .from('profiles').select('role').eq('id', user.id).single()
+        setIsAdmin(profile?.role === 'admin' || profile?.role === 'setter')
+      }
+
+      if (zonesArr.length > 0) {
+        const zoneIds = zonesArr.map(z => z.id)
+        const { data: climbData } = await supabase
+          .from('climbs')
+          .select('id, grade, tags, repeat_count, color, zone_id')
+          .in('zone_id', zoneIds)
+
+        const allClimbs = climbData ?? []
+
+        // Stats — boulder = V-grades, lead = 5.x rope grades, top rope = 0 until type field added
+        const boulder = allClimbs.filter(c => /^V/i.test(c.grade ?? '')).length
+        const lead = allClimbs.filter(c => /^5\./.test(c.grade ?? '')).length
+        setStats({ boulder, lead, topRope: 0 })
+
+        // Grade distribution for chart (VB–V10)
+        const gradeCount = Object.fromEntries(CHART_GRADES.map(g => [g, 0]))
+        allClimbs.forEach(c => {
+          const g = (c.grade ?? '').toUpperCase()
+          if (g in gradeCount) gradeCount[g]++
+        })
+        setChartData(CHART_GRADES.map(g => ({ grade: g, count: gradeCount[g] })))
+
+        // Top 5 by repeat_count
+        const zoneMap = Object.fromEntries(zonesArr.map(z => [z.id, z.name]))
+        const sorted = [...allClimbs]
+          .sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
+          .slice(0, 5)
+          .map(c => ({ ...c, zoneName: zoneMap[c.zone_id] ?? '' }))
+        setTopClimbs(sorted)
+
+        // Avg ratings from ascents for top climbs
+        if (sorted.length > 0) {
+          const topIds = sorted.map(c => c.id)
+          const { data: ratingData } = await supabase
+            .from('ascents')
+            .select('climb_id, rating')
+            .in('climb_id', topIds)
+            .not('rating', 'is', null)
+
+          const sums = {}
+          const counts = {}
+          ;(ratingData ?? []).forEach(r => {
+            sums[r.climb_id] = (sums[r.climb_id] ?? 0) + r.rating
+            counts[r.climb_id] = (counts[r.climb_id] ?? 0) + 1
+          })
+          const avgs = {}
+          Object.keys(sums).forEach(cid => { avgs[cid] = sums[cid] / counts[cid] })
+          setClimbRatings(avgs)
+        }
+      }
+
+      setContentLoading(false)
     }
-    if (id) fetchData()
+
+    fetchGym()
+    fetchContent()
   }, [id])
 
+  async function handleHeroUpload(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingHero(true)
+    try {
+      const gymId = id
+
+      // Confirm the current user is admin/setter before touching the DB
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not logged in')
+      const { data: profile } = await supabase
+        .from('profiles').select('role').eq('id', user.id).single()
+      const role = profile?.role
+      console.log('[hero upload] user:', user.id, 'role:', role, 'gymId:', gymId)
+      if (role !== 'admin' && role !== 'setter') {
+        throw new Error(`Unauthorized: role '${role}' cannot update gym`)
+      }
+
+      // Upload file to Storage
+      const ext = file.name.split('.').pop()
+      const path = `${gymId}-${Date.now()}.${ext}`
+      const { error: uploadError } = await supabase.storage
+        .from('gym-images')
+        .upload(path, file, { upsert: true })
+      if (uploadError) throw uploadError
+
+      const { data: { publicUrl } } = supabase.storage.from('gym-images').getPublicUrl(path)
+      console.log('[hero upload] publicUrl:', publicUrl)
+
+      // Save URL to gyms table and log the full result
+      const updateResult = await supabase
+        .from('gyms')
+        .update({ hero_image_url: publicUrl })
+        .eq('id', gymId)
+      console.log('[hero upload] gyms update result:', updateResult)
+      if (updateResult.error) throw updateResult.error
+
+      setHeroUrl(publicUrl)
+    } catch (err) {
+      console.error('[hero upload] failed:', err)
+    } finally {
+      setUploadingHero(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const hasDescription = !!(gym?.description?.trim())
+  const descWords = hasDescription ? gym.description.split(' ') : []
+  const isLongDesc = descWords.length > 30
+  const shortDesc = isLongDesc ? descWords.slice(0, 30).join(' ') + '…' : gym?.description
+
+  // Only block render until the gym row arrives — hero shows immediately after
+  if (gymLoading) {
+    return (
+      <div className={`${poppins.className} min-h-screen bg-zinc-950 flex items-center justify-center`}>
+        <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />
+      </div>
+    )
+  }
+
   return (
-    <div className={`${poppins.className} min-h-screen bg-zinc-950 text-zinc-100 flex flex-col`}>
-      {/* Header */}
-      <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
-        <div className="flex items-center gap-3 px-4 py-3">
-          <button
-            onClick={() => router.push('/dashboard')}
-            className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
-            aria-label="Go back"
-          >
-            <BackIcon />
-          </button>
-          <h1 className="flex-1 text-base font-semibold text-zinc-100 truncate">
-            {loading ? '' : (gym?.name ?? 'Gym')}
-          </h1>
-          {!loading && (
-            <span className="shrink-0 text-xs text-zinc-500">
-              {zones.length} {zones.length === 1 ? 'zone' : 'zones'}
+    <div className={`${poppins.className} min-h-screen bg-zinc-950 text-zinc-100`}>
+
+      {/* Floating back button */}
+      <div className="fixed top-0 left-0 z-30 p-3 safe-area-inset-top">
+        <button
+          onClick={() => router.push('/dashboard')}
+          className="w-9 h-9 flex items-center justify-center rounded-full bg-zinc-900/80 backdrop-blur text-zinc-300 hover:text-zinc-100 active:scale-90 transition-all shadow-lg"
+          aria-label="Go back"
+        >
+          <BackIcon />
+        </button>
+      </div>
+
+      {/* ── 1. Hero Image ── renders immediately after gym row loads */}
+      <div className="relative w-full h-60 bg-zinc-900 flex items-end">
+        {heroUrl ? (
+          <img
+            src={heroUrl}
+            alt={gym?.name}
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        ) : (
+          <div className="absolute inset-0 bg-gradient-to-br from-zinc-800 to-zinc-950 flex items-center justify-center">
+            <span className="text-6xl font-bold text-zinc-700 select-none opacity-20">
+              {gym?.name?.[0] ?? '?'}
             </span>
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+        <div className="relative z-10 w-full px-4 pb-4 flex items-end justify-between gap-3">
+          <h1 className="text-2xl font-bold text-white drop-shadow-lg leading-tight">
+            {gym?.name}
+          </h1>
+          {isAdmin && (
+            <>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingHero}
+                className="shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-black/50 backdrop-blur text-white hover:bg-black/70 active:scale-90 transition-all"
+                aria-label="Upload hero image"
+              >
+                {uploadingHero
+                  ? <div className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  : <CameraIcon />
+                }
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleHeroUpload}
+              />
+            </>
           )}
         </div>
       </div>
 
-      {/* Zone list */}
-      <div className="flex-1 overflow-y-auto pb-24">
-        {loading ? (
-          <div className="flex items-center justify-center mt-16">
-            <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />
+      {/* Scrollable content */}
+      <div className="pb-28">
+
+        {/* ── 2. Stats Row ── */}
+        <div className="flex border-b border-zinc-800">
+          {[
+            { count: stats.boulder, label: 'Boulder' },
+            { count: stats.lead,    label: 'Lead' },
+            { count: stats.topRope, label: 'Top Rope' },
+          ].map((s, i) => (
+            <div
+              key={s.label}
+              className={`flex-1 flex flex-col items-center py-4 gap-0.5 ${i !== 0 ? 'border-l border-zinc-800' : ''}`}
+            >
+              {contentLoading
+                ? <div className="h-7 w-8 rounded-md bg-zinc-800 animate-pulse mb-0.5" />
+                : <span className="text-2xl font-bold text-zinc-100">{s.count}</span>
+              }
+              <span className="text-[11px] font-medium text-zinc-500">{s.label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* ── 3. Grade Distribution Chart ── */}
+        <div className="px-4 pt-5 pb-2">
+          <p className="text-sm font-semibold text-zinc-300 mb-3">Grade Distribution</p>
+          {contentLoading ? (
+            <div className="h-[140px] rounded-xl bg-zinc-900 animate-pulse" />
+          ) : (
+            <ResponsiveContainer width="100%" height={140}>
+              <BarChart data={chartData} barCategoryGap="22%">
+                <XAxis
+                  dataKey="grade"
+                  tick={{ fill: '#a1a1aa', fontSize: 9, fontFamily: 'inherit' }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  tick={{ fill: '#71717a', fontSize: 10, fontFamily: 'inherit' }}
+                  width={18}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                  {chartData.map(entry => (
+                    <Cell key={entry.grade} fill={GRADE_COLORS[entry.grade] ?? '#52525b'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {/* ── 4. Action Buttons ── */}
+        <div className="flex gap-3 px-4 pt-2 pb-5">
+          <button
+            onClick={() => router.push(`/gym/${id}/discover`)}
+            className="flex-1 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.97] transition-all text-white font-semibold text-[15px] shadow-lg"
+          >
+            Find a Climb
+          </button>
+          <button
+            onClick={() => zonesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            className="flex-1 py-4 rounded-2xl bg-zinc-800 hover:bg-zinc-700 active:scale-[0.97] transition-all text-zinc-100 font-semibold text-[15px]"
+          >
+            Browse by Zone
+          </button>
+        </div>
+
+        {/* ── 5. Most Popular ── */}
+        {contentLoading ? (
+          <div className="px-4 pb-6">
+            <p className="text-sm font-semibold text-zinc-300 mb-3">Most Popular</p>
+            <div className="flex flex-col gap-2">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-16 rounded-2xl bg-zinc-900 animate-pulse" />
+              ))}
+            </div>
           </div>
-        ) : zones.length === 0 ? (
-          <p className="text-center text-zinc-500 text-sm mt-12">No zones in this gym.</p>
-        ) : (
-          <ul>
-            {zones.map((zone, index) => (
-              <li key={zone.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
-                <button
-                  onClick={() => router.push(`/zone/${zone.id}`)}
-                  className="w-full flex items-center gap-3 px-4 py-4 text-left hover:bg-zinc-900 active:bg-zinc-900 transition-colors"
-                >
-                  <LayersIcon />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-zinc-100 truncate">{zone.name}</p>
-                    {zone.description && (
-                      <p className="text-xs text-zinc-500 truncate mt-0.5">{zone.description}</p>
-                    )}
-                  </div>
-                  <ChevronIcon />
-                </button>
-              </li>
-            ))}
-          </ul>
+        ) : topClimbs.length > 0 && (
+          <div className="px-4 pb-6">
+            <p className="text-sm font-semibold text-zinc-300 mb-3">Most Popular</p>
+            <div className="flex flex-col gap-2">
+              {topClimbs.map(climb => {
+                const avgRating = climbRatings[climb.id] ?? 0
+                const stars = Math.round(avgRating)
+                return (
+                  <button
+                    key={climb.id}
+                    onClick={() => router.push(`/climb/${climb.id}`)}
+                    className="w-full flex items-center gap-3 bg-zinc-900 rounded-2xl px-3 py-3 text-left hover:bg-zinc-800 active:scale-[0.99] transition-all"
+                  >
+                    <div
+                      className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center shadow-sm"
+                      style={{ backgroundColor: colorHex(climb.color) }}
+                    >
+                      <span className="text-white font-bold text-sm leading-none">
+                        {climb.grade || '?'}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap gap-1 mb-1">
+                        {(climb.tags ?? []).length > 0
+                          ? (climb.tags ?? []).map(tag => (
+                              <span key={tag} className="text-[10px] bg-zinc-800 text-zinc-400 rounded-full px-2 py-0.5 font-medium">
+                                {tag}
+                              </span>
+                            ))
+                          : <span className="text-[10px] text-zinc-600 italic">No tags</span>
+                        }
+                      </div>
+                      <p className="text-[10px] text-zinc-600 truncate">{climb.zoneName}</p>
+                    </div>
+                    <div className="shrink-0 flex flex-col items-end gap-1">
+                      <div className="flex gap-0.5">
+                        {[1, 2, 3, 4, 5].map(i => <StarIcon key={i} filled={i <= stars} />)}
+                      </div>
+                      <span className="text-[10px] text-zinc-600">
+                        {climb.repeat_count ?? 0} repeats
+                      </span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
         )}
+
+        {/* ── 6. About (collapsible) ── */}
+        {hasDescription && (
+          <div className="px-4 pb-6">
+            <button
+              onClick={() => setAboutOpen(v => !v)}
+              className="w-full flex items-center justify-between mb-2"
+            >
+              <span className="text-sm font-semibold text-zinc-300">About</span>
+              <ChevronDownIcon open={aboutOpen} />
+            </button>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              {aboutOpen || !isLongDesc ? gym.description : shortDesc}
+            </p>
+            {isLongDesc && (
+              <button
+                onClick={() => setAboutOpen(v => !v)}
+                className="mt-2 text-xs text-indigo-400 font-medium hover:text-indigo-300 transition-colors"
+              >
+                {aboutOpen ? 'Show Less' : 'Read More'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ── Zones Section (target for "Browse by Zone") ── */}
+        <div ref={zonesRef} className="pb-2">
+          <div className="px-4 pb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-zinc-300">Zones</p>
+            {!contentLoading && (
+              <span className="text-xs text-zinc-600">
+                {zones.length} {zones.length === 1 ? 'zone' : 'zones'}
+              </span>
+            )}
+          </div>
+          {contentLoading ? (
+            <div className="flex flex-col gap-px">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-14 bg-zinc-900 animate-pulse mx-4 rounded-xl" />
+              ))}
+            </div>
+          ) : zones.length === 0 ? (
+            <p className="text-center text-zinc-600 text-sm py-6">No zones yet.</p>
+          ) : (
+            <ul>
+              {zones.map((zone, index) => (
+                <li key={zone.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
+                  <button
+                    onClick={() => router.push(`/zone/${zone.id}`)}
+                    className="w-full flex items-center gap-3 px-4 py-4 text-left hover:bg-zinc-900 active:bg-zinc-900 transition-colors"
+                  >
+                    <LayersIcon />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-zinc-100 truncate">{zone.name}</p>
+                      {zone.description && (
+                        <p className="text-xs text-zinc-500 truncate mt-0.5">{zone.description}</p>
+                      )}
+                    </div>
+                    <ChevronRightIcon />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
       </div>
 
       <BottomNav />
