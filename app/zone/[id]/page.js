@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
@@ -19,12 +19,12 @@ const GRADE_COLORS = {
   V15: 'bg-sky-700', V16: 'bg-cyan-700', V17: 'bg-teal-700',
 }
 
-const GRADE_RANGES = {
-  'All':   null,
-  'V0–V2': ['V0', 'V1', 'V2'],
-  'V3–V4': ['V3', 'V4'],
-  'V5–V6': ['V5', 'V6'],
-  'V7+':   ['V7', 'V8', 'V9', 'V10', 'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17'],
+const GRADE_SCALE = ['VB', 'V0', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10']
+const GRADE_SCALE_MAX = GRADE_SCALE.length - 1
+
+function gradeToIdx(grade) {
+  if (!grade) return -1
+  return GRADE_SCALE.indexOf(grade.toUpperCase().trim())
 }
 
 const TAG_OPTIONS = ['Crimpy', 'Slopey', 'Juggy', 'Overhang', 'Slab']
@@ -182,7 +182,7 @@ function LogAscentModal({ climbId, initialAttempts, currentRepeatCount, onClose,
     }
 
     setSaving(false)
-    onSaved()
+    onSaved(attempts)
   }
 
   return (
@@ -269,19 +269,95 @@ function LogAscentModal({ climbId, initialAttempts, currentRepeatCount, onClose,
   )
 }
 
+// ─── Grade range slider ───────────────────────────────────────────────────────
+
+function GradeRangeSlider({ minIdx, maxIdx, onChange }) {
+  const trackRef = useRef(null)
+  const dragging = useRef(null)
+
+  function idxFromX(clientX) {
+    const rect = trackRef.current.getBoundingClientRect()
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    return Math.round(pct * GRADE_SCALE_MAX)
+  }
+
+  function onPointerDown(handle, e) {
+    e.preventDefault()
+    dragging.current = handle
+    trackRef.current.setPointerCapture(e.pointerId)
+  }
+
+  function onPointerMove(e) {
+    if (!dragging.current) return
+    const idx = idxFromX(e.clientX)
+    if (dragging.current === 'min') {
+      onChange([Math.min(idx, maxIdx), maxIdx])
+    } else {
+      onChange([minIdx, Math.max(idx, minIdx)])
+    }
+  }
+
+  function onPointerUp() {
+    dragging.current = null
+  }
+
+  const minPct = (minIdx / GRADE_SCALE_MAX) * 100
+  const maxPct = (maxIdx / GRADE_SCALE_MAX) * 100
+  const isFullRange = minIdx === 0 && maxIdx === GRADE_SCALE_MAX
+
+  return (
+    <div className="select-none">
+      <p className={`text-sm font-semibold mb-4 text-center ${isFullRange ? 'text-zinc-500' : 'text-zinc-100'}`}>
+        {isFullRange ? 'All grades' : `${GRADE_SCALE[minIdx]} — ${GRADE_SCALE[maxIdx]}`}
+      </p>
+      <div
+        ref={trackRef}
+        className="relative h-1.5 bg-zinc-700 rounded-full mx-3 cursor-pointer"
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        {/* Active range fill */}
+        <div
+          className="absolute top-0 h-full bg-indigo-500 rounded-full pointer-events-none"
+          style={{ left: `${minPct}%`, right: `${100 - maxPct}%` }}
+        />
+        {/* Min thumb */}
+        <div
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white shadow border-2 border-indigo-500 touch-none"
+          style={{ left: `${minPct}%` }}
+          onPointerDown={(e) => onPointerDown('min', e)}
+        />
+        {/* Max thumb */}
+        <div
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white shadow border-2 border-indigo-500 touch-none"
+          style={{ left: `${maxPct}%` }}
+          onPointerDown={(e) => onPointerDown('max', e)}
+        />
+      </div>
+      <div className="flex justify-between mt-3 px-2">
+        <span className="text-xs text-zinc-600">VB</span>
+        <span className="text-xs text-zinc-600">V10</span>
+      </div>
+    </div>
+  )
+}
+
 // ─── Filter drawer ────────────────────────────────────────────────────────────
 
-function FilterDrawer({ open, onClose, onApply, activeGrade, activeTags, activeFavorites }) {
-  const [pendingGrade, setPendingGrade] = useState(activeGrade)
+function FilterDrawer({ open, onClose, onApply, activeGradeRange, activeTags, activeFavorites, activeStatus }) {
+  const [pendingGradeRange, setPendingGradeRange] = useState(activeGradeRange)
   const [pendingTags, setPendingTags] = useState(activeTags)
   const [pendingFavorites, setPendingFavorites] = useState(activeFavorites)
+  const [pendingStatus, setPendingStatus] = useState(activeStatus)
 
   // Sync pending state from applied filters whenever drawer opens
   useEffect(() => {
     if (open) {
-      setPendingGrade(activeGrade)
+      setPendingGradeRange(activeGradeRange)
       setPendingTags(activeTags)
       setPendingFavorites(activeFavorites)
+      setPendingStatus(activeStatus)
     }
   }, [open])
 
@@ -292,13 +368,14 @@ function FilterDrawer({ open, onClose, onApply, activeGrade, activeTags, activeF
   }
 
   function handleClear() {
-    setPendingGrade('All')
+    setPendingGradeRange([0, GRADE_SCALE_MAX])
     setPendingTags([])
     setPendingFavorites(false)
+    setPendingStatus('All')
   }
 
   function handleApply() {
-    onApply({ grade: pendingGrade, tags: pendingTags, favorites: pendingFavorites })
+    onApply({ gradeRange: pendingGradeRange, tags: pendingTags, favorites: pendingFavorites, status: pendingStatus })
     onClose()
   }
 
@@ -322,6 +399,30 @@ function FilterDrawer({ open, onClose, onApply, activeGrade, activeTags, activeF
         <div className="px-5 pt-3 pb-6">
           <h2 className="text-base font-semibold text-zinc-100 mb-5">Filter Climbs</h2>
 
+          {/* My Progress */}
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2.5">My Progress</p>
+          <div className="flex flex-wrap gap-2 mb-6">
+            {STATUS_FILTER_OPTIONS.map((opt) => {
+              const dotColor = opt === 'Flashed' ? '#3b82f6' : opt === 'Sent' ? '#22c55e' : opt === 'Projects' ? '#eab308' : null
+              return (
+                <button
+                  key={opt}
+                  onClick={() => setPendingStatus(opt)}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                    pendingStatus === opt
+                      ? 'bg-zinc-100 text-zinc-900'
+                      : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                  }`}
+                >
+                  {dotColor && (
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
+                  )}
+                  {opt}
+                </button>
+              )
+            })}
+          </div>
+
           {/* Favorites toggle */}
           <div className="flex items-center justify-between mb-6">
             <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Favorites only</p>
@@ -337,21 +438,13 @@ function FilterDrawer({ open, onClose, onApply, activeGrade, activeTags, activeF
           </div>
 
           {/* Grade range */}
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2.5">Grade</p>
-          <div className="flex flex-wrap gap-2 mb-6">
-            {Object.keys(GRADE_RANGES).map((label) => (
-              <button
-                key={label}
-                onClick={() => setPendingGrade(label)}
-                className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                  pendingGrade === label
-                    ? 'bg-zinc-100 text-zinc-900'
-                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">Grade</p>
+          <div className="mb-6">
+            <GradeRangeSlider
+              minIdx={pendingGradeRange[0]}
+              maxIdx={pendingGradeRange[1]}
+              onChange={setPendingGradeRange}
+            />
           </div>
 
           {/* Tags */}
@@ -393,6 +486,24 @@ function FilterDrawer({ open, onClose, onApply, activeGrade, activeTags, activeF
   )
 }
 
+// ─── Ascent status helpers ────────────────────────────────────────────────────
+
+const STATUS_PRIORITY = { flashed: 3, sent: 2, project: 1 }
+
+const STATUS_BG = {
+  flashed: 'rgba(59, 130, 246, 0.10)',
+  sent:    'rgba(34, 197, 94, 0.10)',
+  project: 'rgba(234, 179, 8, 0.10)',
+  untouched: 'transparent',
+}
+
+const STATUS_FILTER_OPTIONS = ['All', 'Flashed', 'Sent', 'Projects']
+
+function rawAscentStatus(a) {
+  if (a.status === 'sent') return a.tries === 1 ? 'flashed' : 'sent'
+  return 'project'
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ZonePage() {
@@ -402,18 +513,23 @@ export default function ZonePage() {
   const [zone, setZone] = useState(null)
   const [climbs, setClimbs] = useState([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
   const [userRole, setUserRole] = useState(null)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [activeGrade, setActiveGrade] = useState('All')
+  const [activeGradeRange, setActiveGradeRange] = useState([0, GRADE_SCALE_MAX])
   const [activeTags, setActiveTags] = useState([])
   const [activeFavorites, setActiveFavorites] = useState(false)
+  const [statusFilter, setStatusFilter] = useState('All')
 
   const [favorites, setFavorites] = useState(new Set())
+  const [ascents, setAscents] = useState({})
   const [modalClimb, setModalClimb] = useState(null)
 
-  const hasActiveFilters = activeGrade !== 'All' || activeTags.length > 0 || activeFavorites
+  const hasActiveFilters = (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) || activeTags.length > 0 || activeFavorites || statusFilter !== 'All'
+
+  function getClimbStatus(climbId) {
+    return ascents[climbId] ?? 'untouched'
+  }
 
   useEffect(() => {
     async function fetchProfile() {
@@ -431,12 +547,33 @@ export default function ZonePage() {
 
   useEffect(() => {
     async function fetchData() {
-      const [{ data: zoneData }, { data: climbData }] = await Promise.all([
+      const [{ data: zoneData }, { data: climbData }, { data: { user } }] = await Promise.all([
         supabase.from('zones').select('*').eq('id', id).single(),
         supabase.from('climbs').select('*').eq('zone_id', id),
+        supabase.auth.getUser(),
       ])
       if (zoneData) setZone(zoneData)
-      setClimbs(climbData ?? [])
+      const climbList = climbData ?? []
+      setClimbs(climbList)
+
+      if (user && climbList.length > 0) {
+        const { data: ascentData } = await supabase
+          .from('ascents')
+          .select('climb_id, status, tries')
+          .eq('user_id', user.id)
+          .in('climb_id', climbList.map(c => c.id))
+
+        const statusMap = {}
+        for (const a of (ascentData ?? [])) {
+          const s = rawAscentStatus(a)
+          const existing = statusMap[a.climb_id]
+          if (!existing || STATUS_PRIORITY[s] > STATUS_PRIORITY[existing]) {
+            statusMap[a.climb_id] = s
+          }
+        }
+        setAscents(statusMap)
+      }
+
       setLoading(false)
     }
     if (id) fetchData()
@@ -470,20 +607,19 @@ export default function ZonePage() {
     }
   }
 
-  function handleApplyFilters({ grade, tags, favorites: favs }) {
-    setActiveGrade(grade)
+  function handleApplyFilters({ gradeRange, tags, favorites: favs, status }) {
+    setActiveGradeRange(gradeRange)
     setActiveTags(tags)
     setActiveFavorites(favs)
+    setStatusFilter(status)
   }
 
   const filtered = climbs.filter((c) => {
-    // Search
-    if (search && !c.name?.toLowerCase().includes(search.toLowerCase())) return false
-
-    // Grade range
-    const gradeList = GRADE_RANGES[activeGrade]
-    if (gradeList && c.grade) {
-      if (!gradeList.includes(c.grade.toUpperCase())) return false
+    // Grade range — skip if full spectrum
+    if (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) {
+      const idx = gradeToIdx(c.grade)
+      if (idx === -1) return false
+      if (idx < activeGradeRange[0] || idx > activeGradeRange[1]) return false
     }
 
     // Tags (OR: climb must have at least one selected tag)
@@ -495,6 +631,14 @@ export default function ZonePage() {
 
     // Favorites
     if (activeFavorites && !favorites.has(c.id)) return false
+
+    // Status filter
+    if (statusFilter !== 'All') {
+      const s = getClimbStatus(c.id)
+      if (statusFilter === 'Flashed' && s !== 'flashed') return false
+      if (statusFilter === 'Sent' && s !== 'sent') return false
+      if (statusFilter === 'Projects' && s !== 'project') return false
+    }
 
     return true
   })
@@ -541,16 +685,6 @@ export default function ZonePage() {
           </div>
         </div>
 
-        {/* Search */}
-        <div className="px-4 pb-3">
-          <input
-            type="text"
-            placeholder="Search climbs..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-zinc-800 text-zinc-100 placeholder-zinc-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-600"
-          />
-        </div>
       </div>
 
       {/* Climb list */}
@@ -559,12 +693,18 @@ export default function ZonePage() {
           <p className="text-center text-zinc-500 mt-12 text-sm">Loading...</p>
         ) : filtered.length === 0 ? (
           <p className="text-center text-zinc-500 mt-12 text-sm">
-            {search || hasActiveFilters ? 'No climbs match your filters.' : 'No climbs in this zone.'}
+            {hasActiveFilters ? 'No climbs match your filters.' : 'No climbs in this zone.'}
           </p>
         ) : (
           <ul>
-            {filtered.map((climb, index) => (
-              <li key={climb.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
+            {filtered.map((climb, index) => {
+              const climbStatus = getClimbStatus(climb.id)
+              return (
+              <li
+                key={climb.id}
+                className={index !== 0 ? 'border-t border-zinc-800/60' : ''}
+                style={{ backgroundColor: STATUS_BG[climbStatus] }}
+              >
                 <div className="flex items-center gap-3 px-4 py-3.5">
                   {/* Colored shape — primary climb identifier */}
                   <button
@@ -620,7 +760,8 @@ export default function ZonePage() {
                   </div>
                 </div>
               </li>
-            ))}
+            )
+            })}
           </ul>
         )}
       </div>
@@ -640,9 +781,10 @@ export default function ZonePage() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onApply={handleApplyFilters}
-        activeGrade={activeGrade}
+        activeGradeRange={activeGradeRange}
         activeTags={activeTags}
         activeFavorites={activeFavorites}
+        activeStatus={statusFilter}
       />
 
       {/* Log Ascent modal */}
@@ -652,7 +794,15 @@ export default function ZonePage() {
           initialAttempts={1}
           currentRepeatCount={modalClimb.repeat_count ?? 0}
           onClose={() => setModalClimb(null)}
-          onSaved={() => {
+          onSaved={(tries) => {
+            const newStatus = tries === 1 ? 'flashed' : 'sent'
+            setAscents(prev => {
+              const existing = prev[modalClimb.id]
+              if (!existing || STATUS_PRIORITY[newStatus] > STATUS_PRIORITY[existing]) {
+                return { ...prev, [modalClimb.id]: newStatus }
+              }
+              return prev
+            })
             setClimbs(prev => prev.map(c =>
               c.id === modalClimb.id
                 ? { ...c, repeat_count: (c.repeat_count ?? 0) + 1 }
