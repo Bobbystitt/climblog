@@ -27,11 +27,10 @@ function HeartFilledIcon() {
   )
 }
 
-const STATUS_BG = {
-  flashed:   'rgba(59, 130, 246, 0.10)',
-  sent:      'rgba(34, 197, 94, 0.10)',
-  project:   'rgba(234, 179, 8, 0.10)',
-  untouched: 'transparent',
+const STATUS_LABEL = {
+  flashed: { text: 'Flashed', className: 'text-blue-400' },
+  sent:    { text: 'Sent',    className: 'text-green-400' },
+  project: { text: 'Project', className: 'text-yellow-400' },
 }
 
 /**
@@ -56,10 +55,7 @@ export default function ClimbCard({
   const router = useRouter()
 
   return (
-    <li
-      className={showBorder ? 'border-t border-zinc-800/60' : ''}
-      style={{ backgroundColor: STATUS_BG[climbStatus] }}
-    >
+    <li className={showBorder ? 'border-t border-zinc-800/60' : ''}>
       <div className="flex items-center gap-3 px-4 py-3.5">
         {/* Grade badge — navigates to climb detail */}
         <button
@@ -85,6 +81,11 @@ export default function ClimbCard({
               : <span className="text-zinc-600 text-xs">No tags</span>
             }
           </div>
+          {STATUS_LABEL[climbStatus] && (
+            <p className={`text-xs mt-1 font-medium ${STATUS_LABEL[climbStatus].className}`}>
+              {STATUS_LABEL[climbStatus].text}
+            </p>
+          )}
           {climb.zoneName ? (
             <p className="text-xs text-zinc-500 mt-1.5 truncate">{climb.zoneName}</p>
           ) : (
