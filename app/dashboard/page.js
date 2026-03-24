@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
-import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import useAuth from '@/hooks/useAuth'
+import { fetchGyms } from '@/lib/queries'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -37,26 +38,19 @@ function displayName(user) {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [user, setUser] = useState(null)
+  const { user, loading: authLoading } = useAuth()
   const [gyms, setGyms] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [gymsLoaded, setGymsLoaded] = useState(false)
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    fetchGyms().then(data => {
+      setGyms(data)
+      setGymsLoaded(true)
+    })
+  }, [user])
 
-      if (!user) {
-        router.replace('/login')
-        return
-      }
-
-      const { data } = await supabase.from('gyms').select('*').order('name', { ascending: true })
-      setUser(user)
-      setGyms(data ?? [])
-      setLoading(false)
-    }
-    init()
-  }, [router])
+  const loading = authLoading || !gymsLoaded
 
   if (loading) {
     return (

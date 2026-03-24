@@ -3,29 +3,12 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
-import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import useAuth from '@/hooks/useAuth'
+import { fetchSessionAscents } from '@/lib/queries'
+import { climbColor } from '@/constants/colors'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
-
-const CLIMB_COLORS = {
-  red:    '#C0392B',
-  blue:   '#2471A3',
-  green:  '#1E8449',
-  yellow: '#D4AC0D',
-  orange: '#CA6F1E',
-  purple: '#7D3C98',
-  pink:   '#C0527A',
-  white:  '#D5D8DC',
-  gray:   '#707B7C',
-  black:  '#2C3E50',
-  tan:    '#C4A882',
-}
-
-function climbColor(color) {
-  if (!color) return '#52525b'
-  return CLIMB_COLORS[color.toLowerCase()] ?? '#52525b'
-}
 
 // Format a YYYY-MM-DD key as "17 Mar 2026"
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -65,32 +48,23 @@ function StarDisplay({ value, color }) {
 export default function SessionDetailPage() {
   const { date } = useParams()
   const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const [ascents, setAscents] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [dataLoaded, setDataLoaded] = useState(false)
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.replace('/login'); return }
+    if (!user || !date) return
+    // date param is YYYY-MM-DD (UTC). Query the full day range.
+    const start = `${date}T00:00:00.000Z`
+    const [y, m, d] = date.split('-').map(Number)
+    const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString()
+    fetchSessionAscents(user.id, start, next).then(data => {
+      setAscents(data)
+      setDataLoaded(true)
+    })
+  }, [user, date])
 
-      // date param is YYYY-MM-DD (UTC). Query the full day range.
-      const start = `${date}T00:00:00.000Z`
-      const [y, m, d] = date.split('-').map(Number)
-      const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString()
-
-      const { data } = await supabase
-        .from('ascents')
-        .select('id, climbed_at, status, tries, difficulty_rating, rating, notes, climbs(id, grade, color)')
-        .eq('user_id', user.id)
-        .gte('climbed_at', start)
-        .lt('climbed_at', next)
-        .order('climbed_at', { ascending: true })
-
-      setAscents(data ?? [])
-      setLoading(false)
-    }
-    init()
-  }, [date, router])
+  const loading = authLoading || !dataLoaded
 
   if (loading) {
     return (

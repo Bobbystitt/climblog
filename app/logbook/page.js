@@ -3,28 +3,19 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
-import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
+import useAuth from '@/hooks/useAuth'
+import { fetchUserAscents } from '@/lib/queries'
+import { GRADE_HEX, V_GRADE_ORDER } from '@/constants/grades'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
-const GRADE_COLORS = {
-  V0: '#16a34a', V1: '#22c55e', V2: '#84cc16',
-  V3: '#eab308', V4: '#fb923c', V5: '#f97316',
-  V6: '#ef4444', V7: '#dc2626', V8: '#be123c',
-  V9: '#be185d', V10: '#9333ea', V11: '#7e22ce',
-  V12: '#6d28d9', V13: '#4338ca', V14: '#1d4ed8',
-  V15: '#0369a1', V16: '#0e7490', V17: '#0f766e',
-}
-
-const V_GRADE_ORDER = ['V0','V1','V2','V3','V4','V5','V6','V7','V8','V9','V10','V11','V12','V13','V14','V15','V16','V17']
-
 function gradeHex(grade) {
   if (!grade) return '#52525b'
-  return GRADE_COLORS[grade.toUpperCase()] ?? '#52525b'
+  return GRADE_HEX[grade.toUpperCase()] ?? '#52525b'
 }
 
 // Extract UTC date string YYYY-MM-DD from a climbed_at ISO timestamp
@@ -61,23 +52,14 @@ const CustomTooltip = ({ active, payload }) => {
 
 export default function LogbookPage() {
   const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const [sessions, setSessions] = useState([])
   const [chartData, setChartData] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [dataLoaded, setDataLoaded] = useState(false)
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.replace('/login'); return }
-
-      const { data } = await supabase
-        .from('ascents')
-        .select('id, climbed_at, status, climbs(grade)')
-        .eq('user_id', user.id)
-        .order('climbed_at', { ascending: false })
-
-      const ascents = data ?? []
-
+    if (!user) return
+    fetchUserAscents(user.id).then(ascents => {
       // Group by UTC date portion of climbed_at
       const byDate = {}
       for (const a of ascents) {
@@ -110,10 +92,11 @@ export default function LogbookPage() {
 
       setSessions(sessionList)
       setChartData(chart)
-      setLoading(false)
-    }
-    init()
-  }, [router])
+      setDataLoaded(true)
+    })
+  }, [user])
+
+  const loading = authLoading || !dataLoaded
 
   if (loading) {
     return (

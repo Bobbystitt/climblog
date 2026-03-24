@@ -5,30 +5,15 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import GradeBadge from '@/app/components/GradeBadge'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
+import { GRADE_HEX, CHART_GRADES } from '@/constants/grades'
+import { climbColor } from '@/constants/colors'
+import { fetchGymById, fetchZonesByGym, fetchClimbsByZones, fetchUserProfile, fetchClimbRatings } from '@/lib/queries'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
-
-const GRADE_COLORS = {
-  VB: '#15803d',
-  V0: '#16a34a', V1: '#22c55e', V2: '#84cc16',
-  V3: '#eab308', V4: '#fb923c', V5: '#f97316',
-  V6: '#ef4444', V7: '#dc2626', V8: '#be123c',
-  V9: '#be185d', V10: '#9333ea',
-}
-
-const CHART_GRADES = ['VB','V0','V1','V2','V3','V4','V5','V6','V7','V8','V9','V10']
-
-const COLOR_HEX = {
-  red: '#C0392B', blue: '#2471A3', green: '#1E8449',
-  yellow: '#D4AC0D', orange: '#CA6F1E', purple: '#7D3C98',
-  pink: '#C0527A', white: '#D5D8DC', gray: '#707B7C',
-  black: '#2C3E50', tan: '#C4A882',
-}
-
-function colorHex(color) { return COLOR_HEX[color] ?? '#52525b' }
 
 function BackIcon() {
   return (
@@ -123,11 +108,7 @@ export default function GymPage() {
 
     // Phase 1 — fetch gym record alone so the hero renders immediately
     async function fetchGym() {
-      const { data: gymData } = await supabase
-        .from('gyms')
-        .select('*')
-        .eq('id', id)
-        .single()
+      const gymData = await fetchGymById(id)
       if (gymData) {
         setGym(gymData)
         setHeroUrl(gymData.hero_image_url ?? null)
@@ -137,31 +118,21 @@ export default function GymPage() {
 
     // Phase 2 — fetch everything else; runs in parallel with phase 1
     async function fetchContent() {
-      const [
-        { data: { user } },
-        { data: zoneData },
-      ] = await Promise.all([
+      const [{ data: { user } }, zonesArr] = await Promise.all([
         supabase.auth.getUser(),
-        supabase.from('zones').select('*').eq('gym_id', id).order('name', { ascending: true }),
+        fetchZonesByGym(id),
       ])
 
-      const zonesArr = zoneData ?? []
       setZones(zonesArr)
 
       if (user) {
-        const { data: profile } = await supabase
-          .from('profiles').select('role').eq('id', user.id).single()
+        const profile = await fetchUserProfile(user.id)
         setIsAdmin(profile?.role === 'admin' || profile?.role === 'setter')
       }
 
       if (zonesArr.length > 0) {
         const zoneIds = zonesArr.map(z => z.id)
-        const { data: climbData } = await supabase
-          .from('climbs')
-          .select('id, grade, tags, repeat_count, color, zone_id')
-          .in('zone_id', zoneIds)
-
-        const allClimbs = climbData ?? []
+        const allClimbs = await fetchClimbsByZones(zoneIds)
 
         // Stats — boulder = V-grades, lead = 5.x rope grades, top rope = 0 until type field added
         const boulder = allClimbs.filter(c => /^V/i.test(c.grade ?? '')).length
@@ -176,6 +147,7 @@ export default function GymPage() {
         })
         setChartData(CHART_GRADES.map(g => ({ grade: g, count: gradeCount[g] })))
 
+
         // Top 5 by repeat_count
         const zoneMap = Object.fromEntries(zonesArr.map(z => [z.id, z.name]))
         const sorted = [...allClimbs]
@@ -187,15 +159,11 @@ export default function GymPage() {
         // Avg ratings from ascents for top climbs
         if (sorted.length > 0) {
           const topIds = sorted.map(c => c.id)
-          const { data: ratingData } = await supabase
-            .from('ascents')
-            .select('climb_id, rating')
-            .in('climb_id', topIds)
-            .not('rating', 'is', null)
+          const ratingData = await fetchClimbRatings(topIds)
 
           const sums = {}
           const counts = {}
-          ;(ratingData ?? []).forEach(r => {
+          ratingData.forEach(r => {
             sums[r.climb_id] = (sums[r.climb_id] ?? 0) + r.rating
             counts[r.climb_id] = (counts[r.climb_id] ?? 0) + 1
           })
@@ -222,8 +190,7 @@ export default function GymPage() {
       // Confirm the current user is admin/setter before touching the DB
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not logged in')
-      const { data: profile } = await supabase
-        .from('profiles').select('role').eq('id', user.id).single()
+      const profile = await fetchUserProfile(user.id)
       const role = profile?.role
       console.log('[hero upload] user:', user.id, 'role:', role, 'gymId:', gymId)
       if (role !== 'admin' && role !== 'setter') {
@@ -378,7 +345,7 @@ export default function GymPage() {
                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
                 <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                   {chartData.map(entry => (
-                    <Cell key={entry.grade} fill={GRADE_COLORS[entry.grade] ?? '#52525b'} />
+                    <Cell key={entry.grade} fill={GRADE_HEX[entry.grade] ?? '#52525b'} />
                   ))}
                 </Bar>
               </BarChart>
@@ -425,14 +392,7 @@ export default function GymPage() {
                     onClick={() => router.push(`/climb/${climb.id}`)}
                     className="w-full flex items-center gap-3 bg-zinc-900 rounded-2xl px-3 py-3 text-left hover:bg-zinc-800 active:scale-[0.99] transition-all"
                   >
-                    <div
-                      className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center shadow-sm"
-                      style={{ backgroundColor: colorHex(climb.color) }}
-                    >
-                      <span className="text-white font-bold text-sm leading-none">
-                        {climb.grade || '?'}
-                      </span>
-                    </div>
+                    <GradeBadge grade={climb.grade} color={climb.color} size="sm" className="shadow-sm" />
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-wrap gap-1 mb-1">
                         {(climb.tags ?? []).length > 0

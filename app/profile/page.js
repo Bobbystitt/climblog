@@ -3,22 +3,15 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
-import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
+import useAuth from '@/hooks/useAuth'
+import { fetchUserProfile, fetchUserAscents } from '@/lib/queries'
+import { GRADE_HEX, V_GRADE_ORDER } from '@/constants/grades'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
-
-const GRADE_HEX = {
-  V0: '#16a34a', V1: '#22c55e', V2: '#84cc16',
-  V3: '#eab308', V4: '#fb923c', V5: '#f97316',
-  V6: '#ef4444', V7: '#dc2626', V8: '#be123c',
-  V9: '#be185d', V10: '#9333ea', V11: '#7e22ce',
-  V12: '#6d28d9', V13: '#4338ca', V14: '#1d4ed8',
-  V15: '#0369a1', V16: '#0e7490', V17: '#0f766e',
-}
 
 function gradeHex(grade) {
   if (!grade) return '#52525b'
@@ -45,45 +38,30 @@ function PencilIcon() {
   )
 }
 
+function gradeRank(grade) {
+  if (!grade) return -1
+  const upper = grade.toUpperCase()
+  if (upper === 'VB') return 0
+  const m = upper.match(/^V(\d+)$/)
+  return m ? parseInt(m[1]) + 1 : -1
+}
+
 export default function ProfilePage() {
   const router = useRouter()
+  const { user, loading: authLoading } = useAuth()
   const [profile, setProfile] = useState(null)
-  const [user, setUser] = useState(null)
   const [lastSessionChart, setLastSessionChart] = useState([])
   const [stats, setStats] = useState({ totalSends: 0, topGrade: null, sessions: 0 })
-  const [loading, setLoading] = useState(true)
+  const [dataLoaded, setDataLoaded] = useState(false)
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.replace('/login'); return }
-      setUser(user)
-
-      // Fetch profile row
-      const { data: profileData } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, username, avatar_url')
-        .eq('id', user.id)
-        .single()
+    if (!user) return
+    async function loadData() {
+      const [profileData, all] = await Promise.all([
+        fetchUserProfile(user.id),
+        fetchUserAscents(user.id),
+      ])
       setProfile(profileData)
-
-      // Fetch ascents
-      const { data: ascents } = await supabase
-        .from('ascents')
-        .select('*, climbs(grade)')
-        .eq('user_id', user.id)
-        .order('climbed_at', { ascending: false })
-
-      const all = ascents ?? []
-
-      // ── Stats ──────────────────────────────────────────────────────────────
-      function gradeRank(grade) {
-        if (!grade) return -1
-        const upper = grade.toUpperCase()
-        if (upper === 'VB') return 0
-        const m = upper.match(/^V(\d+)$/)
-        return m ? parseInt(m[1]) + 1 : -1
-      }
 
       const sends = all.filter(a => a.status === 'sent')
       const topGradeEntry = sends.reduce((best, a) => {
@@ -92,14 +70,10 @@ export default function ProfilePage() {
       }, null)
       const sessionDates = new Set(all.map(a => a.climbed_at?.slice(0, 10)).filter(Boolean))
       setStats({ totalSends: sends.length, topGrade: topGradeEntry, sessions: sessionDates.size })
-      // ───────────────────────────────────────────────────────────────────────
 
       if (all.length > 0) {
         const lastDate = all[0].climbed_at?.slice(0, 10)
         const lastSession = all.filter(a => a.climbed_at?.slice(0, 10) === lastDate)
-
-        // Tally sends by grade for last session
-        const vGrades = ['V0','V1','V2','V3','V4','V5','V6','V7','V8','V9','V10','V11','V12','V13','V14','V15','V16','V17']
         const tally = {}
         for (const a of lastSession) {
           if (a.status !== 'sent' && a.status !== 'flash') continue
@@ -107,14 +81,16 @@ export default function ProfilePage() {
           if (!g) continue
           tally[g] = (tally[g] ?? 0) + 1
         }
-        const chart = vGrades.filter(g => tally[g]).map(g => ({ grade: g, count: tally[g] }))
+        const chart = V_GRADE_ORDER.filter(g => tally[g]).map(g => ({ grade: g, count: tally[g] }))
         setLastSessionChart(chart)
       }
 
-      setLoading(false)
+      setDataLoaded(true)
     }
-    init()
-  }, [router])
+    loadData()
+  }, [user])
+
+  const loading = authLoading || !dataLoaded
 
   if (loading) {
     return (

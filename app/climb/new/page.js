@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import { COLOR_OPTIONS } from '@/constants/colors'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -19,19 +20,6 @@ const GRADE_OPTIONS = [
   '5.14a', '5.14b', '5.14c', '5.14d',
 ]
 
-const COLOR_OPTIONS = [
-  { value: 'red',    label: 'Red',    hex: '#C0392B' },
-  { value: 'blue',   label: 'Blue',   hex: '#2471A3' },
-  { value: 'green',  label: 'Green',  hex: '#1E8449' },
-  { value: 'yellow', label: 'Yellow', hex: '#D4AC0D' },
-  { value: 'orange', label: 'Orange', hex: '#CA6F1E' },
-  { value: 'purple', label: 'Purple', hex: '#7D3C98' },
-  { value: 'pink',   label: 'Pink',   hex: '#C0527A' },
-  { value: 'white',  label: 'White',  hex: '#D5D8DC' },
-  { value: 'gray',   label: 'Gray',   hex: '#707B7C' },
-  { value: 'black',  label: 'Black',  hex: '#2C3E50' },
-  { value: 'tan',    label: 'Tan',    hex: '#C4A882' },
-]
 
 const TAG_OPTIONS = ['Crimpy', 'Slopey', 'Juggy', 'Overhang', 'Slab']
 

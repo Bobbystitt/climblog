@@ -5,26 +5,10 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import { climbColor } from '@/constants/colors'
+import { fetchClimbById } from '@/lib/queries'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
-
-const CLIMB_COLORS = {
-  red:    '#C0392B',
-  blue:   '#2471A3',
-  green:  '#1E8449',
-  yellow: '#D4AC0D',
-  orange: '#CA6F1E',
-  purple: '#7D3C98',
-  pink:   '#C0527A',
-  white:  '#D5D8DC',
-  gray:   '#707B7C',
-  black:  '#2C3E50',
-}
-
-function climbColor(color) {
-  if (!color) return '#52525b'
-  return CLIMB_COLORS[color.toLowerCase()] ?? '#52525b'
-}
 
 
 function BackIcon() {
@@ -409,12 +393,7 @@ export default function ClimbPage() {
 
   useEffect(() => {
     async function fetchClimb() {
-      const { data, error } = await supabase
-        .from('climbs')
-        .select('*')
-        .eq('id', id)
-        .single()
-
+      const { data, error } = await fetchClimbById(id)
       if (error || !data) setNotFound(true)
       else setClimb(data)
       setLoading(false)

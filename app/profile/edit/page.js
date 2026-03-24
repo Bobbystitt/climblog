@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
+import useAuth from '@/hooks/useAuth'
+import { fetchUserProfile } from '@/lib/queries'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
@@ -28,6 +30,7 @@ function CameraIcon() {
 export default function EditProfilePage() {
   const router = useRouter()
   const fileInputRef = useRef(null)
+  const { user, loading: authLoading } = useAuth()
 
   const [userId, setUserId] = useState(null)
   const [firstName, setFirstName] = useState('')
@@ -38,23 +41,15 @@ export default function EditProfilePage() {
   const [avatarPreview, setAvatarPreview] = useState(null)
   const [initial, setInitial] = useState('?')
 
-  const [loading, setLoading] = useState(true)
+  const [dataLoaded, setDataLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(false)
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { router.replace('/login'); return }
-      setUserId(user.id)
-
-      const { data } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, username, avatar_url')
-        .eq('id', user.id)
-        .single()
-
+    if (!user) return
+    setUserId(user.id)
+    fetchUserProfile(user.id).then(data => {
       if (data) {
         setFirstName(data.first_name ?? '')
         setLastName(data.last_name ?? '')
@@ -67,11 +62,11 @@ export default function EditProfilePage() {
         const first = user.email?.[0] ?? '?'
         setInitial(first.toUpperCase())
       }
+      setDataLoaded(true)
+    })
+  }, [user])
 
-      setLoading(false)
-    }
-    init()
-  }, [router])
+  const loading = authLoading || !dataLoaded
 
   function handleAvatarChange(e) {
     const file = e.target.files[0]
