@@ -24,6 +24,37 @@ function gradeToIdx(grade) {
   return GRADE_SCALE.indexOf(grade.toUpperCase().trim())
 }
 
+function computeRotationStatus(climb) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  let isNewRoute = false
+  let expiryStatus = null
+  let daysUntilReset = null
+
+  if (climb.set_date) {
+    const set = new Date(climb.set_date)
+    set.setHours(0, 0, 0, 0)
+    const daysSinceSet = Math.floor((today - set) / (1000 * 60 * 60 * 24))
+    if (daysSinceSet >= 0 && daysSinceSet <= 7) isNewRoute = true
+  }
+
+  if (climb.planned_reset_date) {
+    const reset = new Date(climb.planned_reset_date)
+    reset.setHours(0, 0, 0, 0)
+    const diff = Math.floor((reset - today) / (1000 * 60 * 60 * 24))
+    if (diff < 0) {
+      expiryStatus = 'overdue'
+      daysUntilReset = diff
+    } else if (diff <= 7) {
+      expiryStatus = 'expiring'
+      daysUntilReset = diff
+    }
+  }
+
+  return { isNewRoute, expiryStatus, daysUntilReset }
+}
+
 // ─── Icons ───────────────────────────────────────────────────────────────────
 
 function BackIcon() {
@@ -46,6 +77,14 @@ function PlusIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    </svg>
+  )
+}
+
+function WrenchIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-5 h-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l5.653-4.655m5.144-6.387a7.5 7.5 0 10-10.607 10.607" />
     </svg>
   )
 }
@@ -238,6 +277,7 @@ export default function ZonePage() {
   const [activeTags, setActiveTags] = useState([])
   const [activeFavorites, setActiveFavorites] = useState(false)
   const [statusFilter, setStatusFilter] = useState('All')
+  const [routeStatusFilter, setRouteStatusFilter] = useState([])
 
   const [favorites, setFavorites] = useState(new Set())
   const [ascents, setAscents] = useState({})
@@ -246,7 +286,7 @@ export default function ZonePage() {
   // Cache user id so toggleFavorite doesn't need to re-fetch auth on every tap
   const currentUserId = useRef(null)
 
-  const hasActiveFilters = (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) || activeTags.length > 0 || activeFavorites || statusFilter !== 'All'
+  const hasActiveFilters = (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) || activeTags.length > 0 || activeFavorites || statusFilter !== 'All' || routeStatusFilter.length > 0
 
   function getClimbStatus(climbId) {
     return ascents[climbId] ?? 'untouched'
@@ -257,6 +297,19 @@ export default function ZonePage() {
   }, [id])
 
   useEffect(() => {
+    if (!id) return
+
+    // Runs concurrently with fetchData so the manage button appears as soon
+    // as the profile confirms the role — not blocked by ascent/favorite loading.
+    // Uses getSession (reads local storage, no network round-trip) to get the
+    // user ID, then fetches the profile independently.
+    async function checkRole() {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) return
+      const profile = await fetchUserProfile(session.user.id)
+      if (profile) setUserRole(profile.role)
+    }
+
     async function fetchData() {
       const [zoneData, climbData, { data: { user } }] = await Promise.all([
         fetchZoneById(id),
@@ -264,20 +317,17 @@ export default function ZonePage() {
         supabase.auth.getUser(),
       ])
       if (zoneData) setZone(zoneData)
-      const climbList = climbData
+      const climbList = climbData.map(c => ({ ...c, ...computeRotationStatus(c) }))
       setClimbs(climbList)
 
       if (user) {
         currentUserId.current = user.id
 
         const climbIds = climbList.map(c => c.id)
-        const [profile, ascentData, favData] = await Promise.all([
-          fetchUserProfile(user.id),
+        const [ascentData, favData] = await Promise.all([
           climbIds.length > 0 ? fetchUserAscentsByClimbs(user.id, climbIds) : Promise.resolve([]),
           climbIds.length > 0 ? fetchUserFavorites(user.id, climbIds) : Promise.resolve([]),
         ])
-
-        if (profile) setUserRole(profile.role)
 
         const statusMap = {}
         for (const a of ascentData) {
@@ -293,7 +343,10 @@ export default function ZonePage() {
 
       setLoading(false)
     }
-    if (id) fetchData()
+
+    // Fire both concurrently — role resolves independently of content loading
+    checkRole()
+    fetchData()
   }, [id])
 
   async function toggleFavorite(climbId) {
@@ -314,11 +367,12 @@ export default function ZonePage() {
     await dbToggleFavorite(userId, climbId, isFav)
   }
 
-  function handleApplyFilters({ gradeRange, tags, favorites: favs, status }) {
+  function handleApplyFilters({ gradeRange, tags, favorites: favs, status, routeStatus }) {
     setActiveGradeRange(gradeRange)
     setActiveTags(tags)
     setActiveFavorites(favs)
     setStatusFilter(status)
+    setRouteStatusFilter(routeStatus ?? [])
   }
 
   const filtered = climbs.filter((c) => {
@@ -345,6 +399,16 @@ export default function ZonePage() {
       if (statusFilter === 'Flashed' && s !== 'flashed') return false
       if (statusFilter === 'Sent' && s !== 'sent') return false
       if (statusFilter === 'Projects' && s !== 'project') return false
+    }
+
+    // Route status filter (OR across selected values)
+    if (routeStatusFilter.length > 0) {
+      const match = routeStatusFilter.some(f => {
+        if (f === 'new') return c.isNewRoute === true
+        if (f === 'expiring') return c.expiryStatus === 'expiring' || c.expiryStatus === 'overdue'
+        return false
+      })
+      if (!match) return false
     }
 
     return true
@@ -390,6 +454,17 @@ export default function ZonePage() {
               <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-indigo-500 ring-2 ring-zinc-950" />
             )}
           </div>
+
+          {/* Manage Zone button — setters and admins only */}
+          {(userRole === 'setter' || userRole === 'admin') && (
+            <button
+              onClick={() => router.push(`/zone/${id}/manage`)}
+              className="shrink-0 p-1.5 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all rounded-lg hover:bg-zinc-800"
+              aria-label="Manage zone"
+            >
+              <WrenchIcon />
+            </button>
+          )}
         </div>
 
       </div>
@@ -438,6 +513,7 @@ export default function ZonePage() {
         activeTags={activeTags}
         activeFavorites={activeFavorites}
         activeStatus={statusFilter}
+        activeRouteStatus={routeStatusFilter}
       />
 
       {/* Log Ascent modal */}

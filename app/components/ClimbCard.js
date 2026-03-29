@@ -33,11 +33,17 @@ const STATUS_LABEL = {
   project: { text: 'Project', className: 'text-yellow-400' },
 }
 
+const NEW_BADGE_CLS = 'bg-green-500/15 text-green-400 border border-green-500/25'
+const EXPIRY_BADGE_CLS = {
+  expiring: 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/25',
+  overdue:  'bg-red-500/15 text-red-400 border border-red-500/25',
+}
+
 /**
  * A single climb row for list views (discover / zone pages).
  *
  * @param {object} props
- * @param {object}   props.climb           - Climb object (id, grade, color, tags, repeat_count, zoneName?)
+ * @param {object}   props.climb           - Climb object (id, grade, color, tags, repeat_count, zoneName?, isNewRoute?, expiryStatus?, daysUntilReset?)
  * @param {string}   props.climbStatus     - 'flashed' | 'sent' | 'project' | 'untouched'
  * @param {boolean}  props.isFavorited     - Whether the climb is in the user's favorites
  * @param {function} props.onLogAscent     - Called with the climb object when the + button is tapped
@@ -54,6 +60,11 @@ export default function ClimbCard({
 }) {
   const router = useRouter()
 
+  const isNewRoute   = climb.isNewRoute   ?? false
+  const expiryStatus = climb.expiryStatus ?? null
+  const daysUntilReset = climb.daysUntilReset ?? null
+  const hasBadge = isNewRoute || expiryStatus
+
   return (
     <li className={showBorder ? 'border-t border-zinc-800/60' : ''}>
       <div className="flex items-center gap-3 px-4 py-3.5">
@@ -69,9 +80,24 @@ export default function ClimbCard({
         {/* Tags + zone name or repeat count */}
         <button
           onClick={() => router.push(`/climb/${climb.id}`)}
-          className="flex-1 min-w-0 text-left"
+          className="relative flex-1 min-w-0 text-left"
         >
-          <div className="flex flex-wrap items-center gap-1.5">
+          {/* Rotation badges — stacked in top-right of text block */}
+          {hasBadge && (
+            <span className="absolute top-0 right-0 flex flex-col items-end gap-0.5">
+              {isNewRoute && (
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-tight ${NEW_BADGE_CLS}`}>
+                  New
+                </span>
+              )}
+              {expiryStatus && (
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-tight ${EXPIRY_BADGE_CLS[expiryStatus]}`}>
+                  {expiryStatus === 'overdue' ? 'Reset Due' : `T-${daysUntilReset} days`}
+                </span>
+              )}
+            </span>
+          )}
+          <div className={`flex flex-wrap items-center gap-1.5 ${hasBadge ? 'pr-16' : ''}`}>
             {Array.isArray(climb.tags) && climb.tags.length > 0
               ? climb.tags.map((tag) => (
                   <span key={tag} className="bg-zinc-800 text-zinc-400 text-xs px-2 py-0.5 rounded-full">

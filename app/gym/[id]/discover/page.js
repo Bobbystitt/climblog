@@ -17,6 +17,37 @@ function gradeToIdx(grade) {
   return GRADE_SCALE.indexOf(grade.toUpperCase().trim())
 }
 
+function computeRotationStatus(climb) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  let isNewRoute = false
+  let expiryStatus = null
+  let daysUntilReset = null
+
+  if (climb.set_date) {
+    const set = new Date(climb.set_date)
+    set.setHours(0, 0, 0, 0)
+    const daysSinceSet = Math.floor((today - set) / (1000 * 60 * 60 * 24))
+    if (daysSinceSet >= 0 && daysSinceSet <= 7) isNewRoute = true
+  }
+
+  if (climb.planned_reset_date) {
+    const reset = new Date(climb.planned_reset_date)
+    reset.setHours(0, 0, 0, 0)
+    const diff = Math.floor((reset - today) / (1000 * 60 * 60 * 24))
+    if (diff < 0) {
+      expiryStatus = 'overdue'
+      daysUntilReset = diff
+    } else if (diff <= 7) {
+      expiryStatus = 'expiring'
+      daysUntilReset = diff
+    }
+  }
+
+  return { isNewRoute, expiryStatus, daysUntilReset }
+}
+
 // ─── Status helpers ───────────────────────────────────────────────────────────
 
 const STATUS_PRIORITY = { flashed: 3, sent: 2, project: 1 }
@@ -205,6 +236,8 @@ export default function DiscoverPage() {
   const [activeTags, setActiveTags] = useState([])
   const [activeFavorites, setActiveFavorites] = useState(false)
   const [statusFilter, setStatusFilter] = useState('All')
+  const [routeStatusFilter, setRouteStatusFilter] = useState([])
+  const [disciplineFilter, setDisciplineFilter] = useState('All')
 
   const [favorites, setFavorites] = useState(new Set())
   const [ascents, setAscents] = useState({})
@@ -216,7 +249,8 @@ export default function DiscoverPage() {
     (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) ||
     activeTags.length > 0 ||
     activeFavorites ||
-    statusFilter !== 'All'
+    statusFilter !== 'All' ||
+    routeStatusFilter.length > 0
 
   function getClimbStatus(climbId) {
     return ascents[climbId] ?? 'untouched'
@@ -234,7 +268,14 @@ export default function DiscoverPage() {
       }
 
       const zoneIds = zones.map(z => z.id)
-      const zoneMap = Object.fromEntries(zones.map(z => [z.id, z.name]))
+
+      // Build lookup: zone_id → { name, discipline }
+      const zoneNameMap = {}
+      const zoneDiscMap = {}
+      zones.forEach(z => {
+        zoneNameMap[z.id] = z.name ?? ''
+        zoneDiscMap[z.id] = z.discipline ?? null
+      })
 
       // Fetch all climbs across all zones + current user in parallel
       const [climbData, { data: { user } }] = await Promise.all([
@@ -242,10 +283,19 @@ export default function DiscoverPage() {
         supabase.auth.getUser(),
       ])
 
-      // Attach zone name and sort by repeat_count descending
+      // Attach zone name, discipline, rotation status; sort by repeat_count descending
       const allClimbs = climbData
-        .map(c => ({ ...c, zoneName: zoneMap[c.zone_id] ?? '' }))
+        .map(c => ({
+          ...c,
+          zoneName: zoneNameMap[c.zone_id] ?? '',
+          discipline: zoneDiscMap[c.zone_id] ?? null,
+          ...computeRotationStatus(c),
+        }))
         .sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
+
+      console.log('[discover] first 3 climbs with discipline:',
+        allClimbs.slice(0, 3).map(c => ({ id: c.id, grade: c.grade, discipline: c.discipline, zone_id: c.zone_id }))
+      )
 
       setClimbs(allClimbs)
 
@@ -294,14 +344,19 @@ export default function DiscoverPage() {
     await dbToggleFavorite(userId, climbId, isFav)
   }
 
-  function handleApplyFilters({ gradeRange, tags, favorites: favs, status }) {
+  function handleApplyFilters({ gradeRange, tags, favorites: favs, status, routeStatus }) {
     setActiveGradeRange(gradeRange)
     setActiveTags(tags)
     setActiveFavorites(favs)
     setStatusFilter(status)
+    setRouteStatusFilter(routeStatus ?? [])
   }
 
+  const DISCIPLINE_OPTIONS = ['All', 'Boulder', 'Lead', 'Top Rope', 'Autobelay']
+
   const filtered = climbs.filter((c) => {
+    if (disciplineFilter !== 'All' && c.discipline !== disciplineFilter) return false
+
     if (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) {
       const idx = gradeToIdx(c.grade)
       if (idx === -1) return false
@@ -321,6 +376,16 @@ export default function DiscoverPage() {
       if (statusFilter === 'Flashed' && s !== 'flashed') return false
       if (statusFilter === 'Sent' && s !== 'sent') return false
       if (statusFilter === 'Projects' && s !== 'project') return false
+    }
+
+    // Route status filter (OR across selected values)
+    if (routeStatusFilter.length > 0) {
+      const match = routeStatusFilter.some(f => {
+        if (f === 'new') return c.isNewRoute === true
+        if (f === 'expiring') return c.expiryStatus === 'expiring' || c.expiryStatus === 'overdue'
+        return false
+      })
+      if (!match) return false
     }
 
     return true
@@ -364,6 +429,23 @@ export default function DiscoverPage() {
         </div>
       </div>
 
+      {/* Discipline pills */}
+      <div className="flex gap-2 px-4 py-2.5 overflow-x-auto scrollbar-none border-b border-zinc-800/60 shrink-0">
+        {DISCIPLINE_OPTIONS.map(disc => (
+          <button
+            key={disc}
+            onClick={() => setDisciplineFilter(disc)}
+            className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-semibold transition-all active:scale-95 ${
+              disciplineFilter === disc
+                ? 'bg-indigo-600 text-white'
+                : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+            }`}
+          >
+            {disc}
+          </button>
+        ))}
+      </div>
+
       {/* Climb list */}
       <div className="flex-1 overflow-y-auto pb-20">
         {loading ? (
@@ -397,6 +479,7 @@ export default function DiscoverPage() {
         activeTags={activeTags}
         activeFavorites={activeFavorites}
         activeStatus={statusFilter}
+        activeRouteStatus={routeStatusFilter}
       />
 
       {modalClimb && (

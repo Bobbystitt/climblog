@@ -80,11 +80,17 @@ function GradeRangeSlider({ minIdx, maxIdx, onChange }) {
 
 // ─── Filter drawer ────────────────────────────────────────────────────────────
 
-export default function FilterDrawer({ open, onClose, onApply, activeGradeRange, activeTags, activeFavorites, activeStatus }) {
+const ROUTE_STATUS_OPTIONS = [
+  { value: 'new',      label: 'New Routes',    dotColor: '#22c55e' },
+  { value: 'expiring', label: 'Expiring Soon', dotColor: '#eab308' },
+]
+
+export default function FilterDrawer({ open, onClose, onApply, activeGradeRange, activeTags, activeFavorites, activeStatus, activeRouteStatus = [] }) {
   const [pendingGradeRange, setPendingGradeRange] = useState(activeGradeRange)
   const [pendingTags, setPendingTags] = useState(activeTags)
   const [pendingFavorites, setPendingFavorites] = useState(activeFavorites)
   const [pendingStatus, setPendingStatus] = useState(activeStatus)
+  const [pendingRouteStatus, setPendingRouteStatus] = useState(activeRouteStatus)
 
   useEffect(() => {
     if (open) {
@@ -92,6 +98,7 @@ export default function FilterDrawer({ open, onClose, onApply, activeGradeRange,
       setPendingTags(activeTags)
       setPendingFavorites(activeFavorites)
       setPendingStatus(activeStatus)
+      setPendingRouteStatus(activeRouteStatus)
     }
   }, [open])
 
@@ -101,15 +108,22 @@ export default function FilterDrawer({ open, onClose, onApply, activeGradeRange,
     )
   }
 
+  function toggleRouteStatus(value) {
+    setPendingRouteStatus((prev) =>
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
+    )
+  }
+
   function handleClear() {
     setPendingGradeRange([0, GRADE_SCALE_MAX])
     setPendingTags([])
     setPendingFavorites(false)
     setPendingStatus('All')
+    setPendingRouteStatus([])
   }
 
   function handleApply() {
-    onApply({ gradeRange: pendingGradeRange, tags: pendingTags, favorites: pendingFavorites, status: pendingStatus })
+    onApply({ gradeRange: pendingGradeRange, tags: pendingTags, favorites: pendingFavorites, status: pendingStatus, routeStatus: pendingRouteStatus })
     onClose()
   }
 
@@ -179,7 +193,7 @@ export default function FilterDrawer({ open, onClose, onApply, activeGradeRange,
 
           {/* Tags */}
           <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2.5">Style</p>
-          <div className="flex flex-wrap gap-2 mb-8">
+          <div className="flex flex-wrap gap-2 mb-6">
             {TAG_OPTIONS.map((tag) => (
               <button
                 key={tag}
@@ -191,6 +205,25 @@ export default function FilterDrawer({ open, onClose, onApply, activeGradeRange,
                 }`}
               >
                 {tag}
+              </button>
+            ))}
+          </div>
+
+          {/* Route Status */}
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2.5">Route Status</p>
+          <div className="flex flex-wrap gap-2 mb-8">
+            {ROUTE_STATUS_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => toggleRouteStatus(opt.value)}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                  pendingRouteStatus.includes(opt.value)
+                    ? 'bg-zinc-100 text-zinc-900'
+                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: opt.dotColor }} />
+                {opt.label}
               </button>
             ))}
           </div>

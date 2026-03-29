@@ -93,6 +93,7 @@ export default function GymPage() {
   const [chartData, setChartData] = useState([])
   const [topClimbs, setTopClimbs] = useState([])
   const [climbRatings, setClimbRatings] = useState({})
+  const [disciplineFilter, setDisciplineFilter] = useState('All')
   // gymLoading: true only until the gym row itself arrives (controls hero render)
   const [gymLoading, setGymLoading] = useState(true)
   // contentLoading: true until zones/climbs/stats are ready (controls section skeletons)
@@ -132,7 +133,26 @@ export default function GymPage() {
 
       if (zonesArr.length > 0) {
         const zoneIds = zonesArr.map(z => z.id)
-        const allClimbs = await fetchClimbsByZones(zoneIds)
+        const rawClimbs = await fetchClimbsByZones(zoneIds)
+
+        // Build lookup: zone_id → { name, discipline }
+        const zoneNameMap = {}
+        const zoneDiscMap = {}
+        zonesArr.forEach(z => {
+          zoneNameMap[z.id] = z.name ?? ''
+          zoneDiscMap[z.id] = z.discipline ?? null
+        })
+
+        // Attach zone name + discipline to every climb
+        const allClimbs = rawClimbs.map(c => ({
+          ...c,
+          zoneName: zoneNameMap[c.zone_id] ?? '',
+          discipline: zoneDiscMap[c.zone_id] ?? null,
+        }))
+
+        console.log('[gym] first 3 climbs with discipline:',
+          allClimbs.slice(0, 3).map(c => ({ id: c.id, grade: c.grade, discipline: c.discipline, zone_id: c.zone_id }))
+        )
 
         // Stats — boulder = V-grades, lead = 5.x rope grades, top rope = 0 until type field added
         const boulder = allClimbs.filter(c => /^V/i.test(c.grade ?? '')).length
@@ -147,13 +167,10 @@ export default function GymPage() {
         })
         setChartData(CHART_GRADES.map(g => ({ grade: g, count: gradeCount[g] })))
 
-
-        // Top 5 by repeat_count
-        const zoneMap = Object.fromEntries(zonesArr.map(z => [z.id, z.name]))
+        // Top 5 by repeat_count (already have zoneName + discipline attached)
         const sorted = [...allClimbs]
           .sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
           .slice(0, 5)
-          .map(c => ({ ...c, zoneName: zoneMap[c.zone_id] ?? '' }))
         setTopClimbs(sorted)
 
         // Avg ratings from ascents for top climbs
@@ -224,6 +241,12 @@ export default function GymPage() {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
+
+  const DISCIPLINE_OPTIONS = ['All', 'Boulder', 'Lead', 'Top Rope', 'Autobelay']
+
+  const filteredTopClimbs = disciplineFilter === 'All'
+    ? topClimbs
+    : topClimbs.filter(c => c.discipline === disciplineFilter)
 
   const hasDescription = !!(gym?.description?.trim())
   const descWords = hasDescription ? gym.description.split(' ') : []
@@ -321,7 +344,24 @@ export default function GymPage() {
           ))}
         </div>
 
-        {/* ── 3. Grade Distribution Chart ── */}
+        {/* ── 3. Discipline Filter Pills ── */}
+        <div className="flex gap-2 px-4 py-3 overflow-x-auto scrollbar-none border-b border-zinc-800/60">
+          {DISCIPLINE_OPTIONS.map(disc => (
+            <button
+              key={disc}
+              onClick={() => setDisciplineFilter(disc)}
+              className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-semibold transition-all active:scale-95 ${
+                disciplineFilter === disc
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+              }`}
+            >
+              {disc}
+            </button>
+          ))}
+        </div>
+
+        {/* ── 4. Grade Distribution Chart ── */}
         <div className="px-4 pt-5 pb-2">
           <p className="text-sm font-semibold text-zinc-300 mb-3">Grade Distribution</p>
           {contentLoading ? (
@@ -369,7 +409,7 @@ export default function GymPage() {
           </button>
         </div>
 
-        {/* ── 5. Most Popular ── */}
+        {/* ── 6. Most Popular ── */}
         {contentLoading ? (
           <div className="px-4 pb-6">
             <p className="text-sm font-semibold text-zinc-300 mb-3">Most Popular</p>
@@ -379,11 +419,11 @@ export default function GymPage() {
               ))}
             </div>
           </div>
-        ) : topClimbs.length > 0 && (
+        ) : filteredTopClimbs.length > 0 ? (
           <div className="px-4 pb-6">
             <p className="text-sm font-semibold text-zinc-300 mb-3">Most Popular</p>
             <div className="flex flex-col gap-2">
-              {topClimbs.map(climb => {
+              {filteredTopClimbs.map(climb => {
                 const avgRating = climbRatings[climb.id] ?? 0
                 const stars = Math.round(avgRating)
                 return (
@@ -419,9 +459,13 @@ export default function GymPage() {
               })}
             </div>
           </div>
+        ) : !contentLoading && (
+          <p className="px-4 pb-6 text-sm text-zinc-600">
+            {disciplineFilter === 'All' ? 'No popular climbs yet.' : `No popular ${disciplineFilter} climbs yet.`}
+          </p>
         )}
 
-        {/* ── 6. About (collapsible) ── */}
+        {/* ── 7. About (collapsible) ── */}
         {hasDescription && (
           <div className="px-4 pb-6">
             <button
@@ -458,15 +502,22 @@ export default function GymPage() {
           {contentLoading ? (
             <div className="flex flex-col gap-px">
               {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-14 bg-zinc-900 animate-pulse mx-4 rounded-xl" />
+                <div key={i} className="h-14 bg-zinc-900 animate-pulse mx-4 rounded-xl mb-2" />
               ))}
             </div>
           ) : zones.length === 0 ? (
             <p className="text-center text-zinc-600 text-sm py-6">No zones yet.</p>
-          ) : (
-            <ul>
-              {zones.map((zone, index) => (
-                <li key={zone.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
+          ) : (() => {
+            const ROPE_DISCIPLINES = ['lead', 'toprope', 'autobelay']
+            const ROPE_LABEL = { lead: 'Lead', toprope: 'Top Rope', autobelay: 'Autobelay' }
+
+            const boulderingZones = zones.filter(z => z.discipline === 'boulder')
+            const ropeZones = zones.filter(z => ROPE_DISCIPLINES.includes(z.discipline))
+            const uncategorised = zones.filter(z => !z.discipline || (z.discipline !== 'boulder' && !ROPE_DISCIPLINES.includes(z.discipline)))
+
+            function ZoneRow({ zone, showBorder, showDisciplineLabel }) {
+              return (
+                <li className={showBorder ? 'border-t border-zinc-800/60' : ''}>
                   <button
                     onClick={() => router.push(`/zone/${zone.id}`)}
                     className="w-full flex items-center gap-3 px-4 py-4 text-left hover:bg-zinc-900 active:bg-zinc-900 transition-colors"
@@ -478,12 +529,58 @@ export default function GymPage() {
                         <p className="text-xs text-zinc-500 truncate mt-0.5">{zone.description}</p>
                       )}
                     </div>
+                    {showDisciplineLabel && zone.discipline && ROPE_LABEL[zone.discipline] && (
+                      <span className="shrink-0 text-[10px] font-semibold text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded-full mr-1">
+                        {ROPE_LABEL[zone.discipline]}
+                      </span>
+                    )}
                     <ChevronRightIcon />
                   </button>
                 </li>
-              ))}
-            </ul>
-          )}
+              )
+            }
+
+            return (
+              <div className="flex flex-col">
+                {boulderingZones.length > 0 && (
+                  <div>
+                    <p className="px-4 pt-1 pb-2 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                      Bouldering
+                    </p>
+                    <ul>
+                      {boulderingZones.map((zone, i) => (
+                        <ZoneRow key={zone.id} zone={zone} showBorder={i !== 0} showDisciplineLabel={false} />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {ropeZones.length > 0 && (
+                  <div className={boulderingZones.length > 0 ? 'mt-4' : ''}>
+                    <p className="px-4 pt-1 pb-2 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                      Ropes
+                    </p>
+                    <ul>
+                      {ropeZones.map((zone, i) => (
+                        <ZoneRow key={zone.id} zone={zone} showBorder={i !== 0} showDisciplineLabel={true} />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {uncategorised.length > 0 && (
+                  <div className={(boulderingZones.length > 0 || ropeZones.length > 0) ? 'mt-4' : ''}>
+                    <p className="px-4 pt-1 pb-2 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">
+                      Other
+                    </p>
+                    <ul>
+                      {uncategorised.map((zone, i) => (
+                        <ZoneRow key={zone.id} zone={zone} showBorder={i !== 0} showDisciplineLabel={false} />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
         </div>
 
       </div>
