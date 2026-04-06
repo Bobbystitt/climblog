@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
@@ -145,316 +145,494 @@ function GradePicker({ value, onChange }) {
 
 // ─── Image Editor ─────────────────────────────────────────────────────────────
 
-function ImageEditor({ sourceFile, climbColorHex, visible, exportRef }) {
+function ImageEditor({ sourceFile, originalSourceFile, visible, exportRef }) {
+  const containerRef = useRef(null)
   const canvasRef = useRef(null)
-  const imgRef = useRef(null)
-  const origImgRef = useRef(null)
-  const draggingRef = useRef(null)
+  const overlayRef = useRef(null)
+  const origPixelDataRef = useRef(null)   // Gemini-processed baseline → used by Reset
+  const rawPixelDataRef = useRef(null)    // Raw pre-Gemini photo → used by Highlight brush
+  const zoomRef = useRef(1)
+  const panOffsetRef = useRef({ x: 0, y: 0 })
+  const isBrushingRef = useRef(false)
+  const pinchRef = useRef(null)
+  const cropDragRef = useRef(null)
+  const brushSizeRef = useRef(30)
+  const activeToolRef = useRef('highlight')
 
-  const [activeTool, setActiveTool] = useState('route')
-  const [routePoints, setRoutePoints] = useState([])
-  const [holdMarkers, setHoldMarkers] = useState([])
+  const [activeTool, setActiveTool] = useState('highlight')
+  const [brushSize, setBrushSize] = useState(30)
+  const [zoom, setZoomState] = useState(1)
+  const [panOffset, setPanOffsetState] = useState({ x: 0, y: 0 })
   const [cropRect, setCropRect] = useState(null)
+  const [undoStack, setUndoStack] = useState([])
+  const [imageSize, setImageSize] = useState({ w: 4, h: 3 })
+  const [imageLoaded, setImageLoaded] = useState(false)
 
-  // Always expose latest getFile via exportRef
+  useEffect(() => { activeToolRef.current = activeTool }, [activeTool])
+  useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
+
+  const setZoom = useCallback((v) => { zoomRef.current = v; setZoomState(v) }, [])
+  const setPanOffset = useCallback((v) => { panOffsetRef.current = v; setPanOffsetState(v) }, [])
+
   useEffect(() => { if (exportRef) exportRef.current = { getFile } })
 
-  // Load image whenever sourceFile changes
+  // Load image
   useEffect(() => {
     if (!sourceFile) return
+    setImageLoaded(false)
     const url = URL.createObjectURL(sourceFile)
     const img = new window.Image()
     img.onload = () => {
       URL.revokeObjectURL(url)
-      imgRef.current = img
-      origImgRef.current = img
-      const w = img.naturalWidth, h = img.naturalHeight
       const canvas = canvasRef.current
-      if (canvas) { canvas.width = w; canvas.height = h }
-      setRoutePoints([
-        { x: w * 0.5, y: h * 0.88 },
-        { x: w * 0.5, y: h * 0.62 },
-        { x: w * 0.5, y: h * 0.38 },
-        { x: w * 0.5, y: h * 0.12 },
-      ])
-      setHoldMarkers([])
-      setCropRect({ x: 0, y: 0, w, h })
+      if (!canvas) return
+      canvas.width = img.naturalWidth
+      canvas.height = img.naturalHeight
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      ctx.drawImage(img, 0, 0)
+      origPixelDataRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      setImageSize({ w: img.naturalWidth, h: img.naturalHeight })
+      setCropRect({ x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight })
+      setUndoStack([])
+      setZoom(1)
+      setPanOffset({ x: 0, y: 0 })
+      setImageLoaded(true)
     }
     img.src = url
-  }, [sourceFile])
+  }, [sourceFile, setZoom, setPanOffset])
 
-  // Redraw on any state or visibility change
-  useEffect(() => { redraw() }, [activeTool, routePoints, holdMarkers, cropRect, climbColorHex, visible])
-
-  function getScale() {
-    const canvas = canvasRef.current
-    if (!canvas) return 1
-    const dw = canvas.getBoundingClientRect().width
-    return dw > 0 ? canvas.width / dw : 1
-  }
-
-  function redraw(forExport = false) {
-    const canvas = canvasRef.current
-    const img = imgRef.current
-    if (!canvas || !img) return
-    const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, 0, 0)
-
-    const s = forExport ? 1 : getScale()
-    const col = climbColorHex || '#6366f1'
-
-    // Hold markers
-    holdMarkers.forEach(m => {
-      ctx.beginPath()
-      ctx.arc(m.x, m.y, 20 * s, 0, Math.PI * 2)
-      ctx.fillStyle = col + '80'
-      ctx.fill()
-      ctx.strokeStyle = col
-      ctx.lineWidth = 2 * s
-      ctx.stroke()
-    })
-
-    // Route line
-    if (routePoints.length >= 2) {
-      ctx.beginPath()
-      ctx.moveTo(routePoints[0].x, routePoints[0].y)
-      routePoints.slice(1).forEach(p => ctx.lineTo(p.x, p.y))
-      ctx.strokeStyle = col
-      ctx.lineWidth = 4 * s
-      ctx.lineJoin = 'round'
-      ctx.lineCap = 'round'
-      ctx.stroke()
-
-      // Arrowhead at topmost point
-      const topIdx = routePoints.reduce((b, p, i) => p.y < routePoints[b].y ? i : b, 0)
-      const top = routePoints[topIdx]
-      const nbr = routePoints[topIdx > 0 ? topIdx - 1 : topIdx + 1]
-      const angle = Math.atan2(top.y - nbr.y, top.x - nbr.x)
-      const sz = 22 * s
-      ctx.beginPath()
-      ctx.moveTo(top.x, top.y)
-      ctx.lineTo(top.x - sz * Math.cos(angle - Math.PI / 6), top.y - sz * Math.sin(angle - Math.PI / 6))
-      ctx.lineTo(top.x - sz * Math.cos(angle + Math.PI / 6), top.y - sz * Math.sin(angle + Math.PI / 6))
-      ctx.closePath()
-      ctx.fillStyle = col
-      ctx.fill()
+  // Load raw (pre-Gemini) photo into rawPixelDataRef — never modified after load except on crop
+  useEffect(() => {
+    const file = originalSourceFile ?? sourceFile
+    if (!file) return
+    const url = URL.createObjectURL(file)
+    const img = new window.Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      const tmp = document.createElement('canvas')
+      tmp.width = img.naturalWidth
+      tmp.height = img.naturalHeight
+      tmp.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0)
+      rawPixelDataRef.current = tmp.getContext('2d').getImageData(0, 0, tmp.width, tmp.height)
     }
+    img.src = url
+  }, [originalSourceFile, sourceFile])
 
-    if (!forExport) {
-      // Route drag handles
-      if (activeTool === 'route') {
-        routePoints.forEach(p => {
-          ctx.beginPath()
-          ctx.arc(p.x, p.y, 14 * s, 0, Math.PI * 2)
-          ctx.fillStyle = 'rgba(255,255,255,0.92)'
-          ctx.fill()
-          ctx.strokeStyle = col
-          ctx.lineWidth = 3 * s
-          ctx.stroke()
-        })
-      }
+  // Overlay redraws
+  useEffect(() => { drawOverlay() }, [zoom, panOffset, cropRect, activeTool, imageLoaded, visible])
 
-      // Crop overlay
-      if (activeTool === 'crop' && cropRect) {
-        const { x, y, w, h } = cropRect
-        const cw = canvas.width, ch = canvas.height
-        ctx.fillStyle = 'rgba(0,0,0,0.6)'
-        ctx.fillRect(0, 0, cw, y)
-        ctx.fillRect(0, y + h, cw, ch - y - h)
-        ctx.fillRect(0, y, x, h)
-        ctx.fillRect(x + w, y, cw - x - w, h)
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)'
-        ctx.lineWidth = 2 * s
-        ctx.strokeRect(x, y, w, h)
-        // Rule-of-thirds guides
-        ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-        ctx.lineWidth = s
-        ctx.beginPath()
-        ;[1/3, 2/3].forEach(t => {
-          ctx.moveTo(x + w * t, y); ctx.lineTo(x + w * t, y + h)
-          ctx.moveTo(x, y + h * t); ctx.lineTo(x + w, y + h * t)
-        })
-        ctx.stroke()
-        // Corner handles
-        const hs = 13 * s
-        ctx.fillStyle = 'white'
-        ;[[x, y], [x + w, y], [x, y + h], [x + w, y + h]].forEach(([cx, cy]) => {
-          ctx.fillRect(cx - hs / 2, cy - hs / 2, hs, hs)
-        })
-      }
-    }
-  }
-
-  function getCoords(e) {
-    const canvas = canvasRef.current
-    const touch = e.touches?.[0] ?? e.changedTouches?.[0]
-    const cx = touch ? touch.clientX : e.clientX
-    const cy = touch ? touch.clientY : e.clientY
-    const rect = canvas.getBoundingClientRect()
-    const s = canvas.width / rect.width
-    return { x: (cx - rect.left) * s, y: (cy - rect.top) * s }
-  }
-
-  function segDist(px, py, ax, ay, bx, by) {
-    const dx = bx - ax, dy = by - ay
-    const len2 = dx * dx + dy * dy
-    if (!len2) return Math.hypot(px - ax, py - ay)
-    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
-    return Math.hypot(px - ax - t * dx, py - ay - t * dy)
-  }
-
-  function handleDown(e) {
-    e.preventDefault()
-    const { x, y } = getCoords(e)
-    const s = getScale()
-
-    if (activeTool === 'route') {
-      const hitR = 14 * s * 1.8
-      const idx = routePoints.findIndex(p => Math.hypot(p.x - x, p.y - y) < hitR)
-      if (idx !== -1) { draggingRef.current = { type: 'pt', idx }; return }
-      // Insert point on nearest segment
-      let best = -1, bestD = hitR * 1.5
-      routePoints.forEach((p, i) => {
-        if (i === routePoints.length - 1) return
-        const d = segDist(x, y, p.x, p.y, routePoints[i + 1].x, routePoints[i + 1].y)
-        if (d < bestD) { bestD = d; best = i }
+  // Non-passive wheel listener
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    function onWheel(e) {
+      e.preventDefault()
+      const curZoom = zoomRef.current
+      const curPan = panOffsetRef.current
+      const delta = e.deltaY > 0 ? -0.15 : 0.15
+      const newZoom = Math.max(1, Math.min(4, curZoom + delta))
+      if (newZoom === curZoom) return
+      const rect = el.getBoundingClientRect()
+      const relX = e.clientX - rect.left
+      const relY = e.clientY - rect.top
+      const zoomRatio = newZoom / curZoom
+      const newPanX = relX - (relX - curPan.x) * zoomRatio
+      const newPanY = relY - (relY - curPan.y) * zoomRatio
+      const cw = el.offsetWidth, ch = el.offsetHeight
+      setZoom(newZoom)
+      setPanOffset({
+        x: Math.max(cw * (1 - newZoom), Math.min(0, newPanX)),
+        y: Math.max(ch * (1 - newZoom), Math.min(0, newPanY)),
       })
-      if (best !== -1) setRoutePoints(prev => { const pts = [...prev]; pts.splice(best + 1, 0, { x, y }); return pts })
-    } else if (activeTool === 'holds') {
-      const holdHR = 20 * s * 1.5
-      const idx = holdMarkers.findIndex(m => Math.hypot(m.x - x, m.y - y) < holdHR)
-      if (idx !== -1) setHoldMarkers(prev => prev.filter((_, i) => i !== idx))
-      else setHoldMarkers(prev => [...prev, { x, y }])
-    } else if (activeTool === 'crop' && cropRect) {
-      const cropHS = 13 * s * 2
-      const { x: rx, y: ry, w: rw, h: rh } = cropRect
-      const corners = [
-        { n: 'tl', cx: rx, cy: ry }, { n: 'tr', cx: rx + rw, cy: ry },
-        { n: 'bl', cx: rx, cy: ry + rh }, { n: 'br', cx: rx + rw, cy: ry + rh },
-      ]
-      const corner = corners.find(c => Math.hypot(c.cx - x, c.cy - y) < cropHS)
-      if (corner) { draggingRef.current = { type: 'corner', n: corner.n, orig: { ...cropRect }, sx: x, sy: y }; return }
-      if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) {
-        draggingRef.current = { type: 'move', orig: { ...cropRect }, sx: x, sy: y }
-      } else {
-        draggingRef.current = { type: 'new', sx: x, sy: y }
-        setCropRect({ x, y, w: 1, h: 1 })
-      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [setZoom, setPanOffset])
+
+  function clampPan(px, py, z) {
+    const el = containerRef.current
+    if (!el) return { x: px, y: py }
+    const cw = el.offsetWidth, ch = el.offsetHeight
+    return {
+      x: Math.max(cw * (1 - z), Math.min(0, px)),
+      y: Math.max(ch * (1 - z), Math.min(0, py)),
     }
   }
 
-  function handleMove(e) {
-    e.preventDefault()
-    const d = draggingRef.current
-    if (!d) return
-    const { x, y } = getCoords(e)
+  function getRelPos(clientX, clientY) {
+    const el = containerRef.current
+    if (!el) return { x: 0, y: 0 }
+    const rect = el.getBoundingClientRect()
+    return { x: clientX - rect.left, y: clientY - rect.top }
+  }
+
+  function canvasToScreen(cx, cy) {
+    const el = containerRef.current
     const canvas = canvasRef.current
-    const cw = canvas.width, ch = canvas.height
+    if (!el || !canvas) return { x: cx, y: cy }
+    const z = zoomRef.current, pan = panOffsetRef.current
+    const sx = (el.offsetWidth * z) / canvas.width
+    const sy = (el.offsetHeight * z) / canvas.height
+    return { x: cx * sx + pan.x, y: cy * sy + pan.y }
+  }
 
-    if (d.type === 'pt') {
-      setRoutePoints(prev => prev.map((p, i) =>
-        i === d.idx ? { x: Math.max(0, Math.min(cw, x)), y: Math.max(0, Math.min(ch, y)) } : p
-      ))
-    } else if (d.type === 'new') {
-      setCropRect({ x: Math.min(x, d.sx), y: Math.min(y, d.sy), w: Math.max(10, Math.abs(x - d.sx)), h: Math.max(10, Math.abs(y - d.sy)) })
-    } else if (d.type === 'move') {
-      const { orig: r } = d
-      setCropRect({ x: Math.max(0, Math.min(cw - r.w, r.x + x - d.sx)), y: Math.max(0, Math.min(ch - r.h, r.y + y - d.sy)), w: r.w, h: r.h })
-    } else if (d.type === 'corner') {
-      const { orig: r, n } = d
-      const min = 40
-      let nx = r.x, ny = r.y, nw = r.w, nh = r.h
-      if (n === 'tl') { nx = Math.min(x, r.x + r.w - min); ny = Math.min(y, r.y + r.h - min); nw = r.x + r.w - nx; nh = r.y + r.h - ny }
-      else if (n === 'tr') { ny = Math.min(y, r.y + r.h - min); nw = Math.max(min, x - r.x); nh = r.y + r.h - ny }
-      else if (n === 'bl') { nx = Math.min(x, r.x + r.w - min); nw = r.x + r.w - nx; nh = Math.max(min, y - r.y) }
-      else { nw = Math.max(min, x - r.x); nh = Math.max(min, y - r.y) }
-      setCropRect({ x: Math.max(0, nx), y: Math.max(0, ny), w: Math.min(nw, cw - nx), h: Math.min(nh, ch - ny) })
+  function screenToCanvas(relX, relY) {
+    const el = containerRef.current
+    const canvas = canvasRef.current
+    if (!el || !canvas) return { x: 0, y: 0 }
+    const z = zoomRef.current, pan = panOffsetRef.current
+    const sx = (el.offsetWidth * z) / canvas.width
+    const sy = (el.offsetHeight * z) / canvas.height
+    return { x: (relX - pan.x) / sx, y: (relY - pan.y) / sy }
+  }
+
+  function screenDeltaToCanvas(dx, dy) {
+    const el = containerRef.current
+    const canvas = canvasRef.current
+    if (!el || !canvas) return { x: dx, y: dy }
+    const z = zoomRef.current
+    const sx = (el.offsetWidth * z) / canvas.width
+    const sy = (el.offsetHeight * z) / canvas.height
+    return { x: dx / sx, y: dy / sy }
+  }
+
+  function drawOverlay() {
+    const overlay = overlayRef.current
+    const el = containerRef.current
+    if (!overlay || !el) return
+    const ow = el.offsetWidth, oh = el.offsetHeight
+    if (!ow || !oh) return
+    overlay.width = ow
+    overlay.height = oh
+    const ctx = overlay.getContext('2d')
+    ctx.clearRect(0, 0, ow, oh)
+
+    if (activeTool === 'crop' && cropRect) {
+      const tl = canvasToScreen(cropRect.x, cropRect.y)
+      const br = canvasToScreen(cropRect.x + cropRect.w, cropRect.y + cropRect.h)
+      const x = tl.x, y = tl.y, w = br.x - tl.x, h = br.y - tl.y
+      if (w < 1 || h < 1) return
+
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(0, 0, ow, y)
+      ctx.fillRect(0, y + h, ow, Math.max(0, oh - y - h))
+      ctx.fillRect(0, y, x, h)
+      ctx.fillRect(x + w, y, Math.max(0, ow - x - w), h)
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth = 2
+      ctx.strokeRect(x, y, w, h)
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ;[1 / 3, 2 / 3].forEach(t => {
+        ctx.moveTo(x + w * t, y); ctx.lineTo(x + w * t, y + h)
+        ctx.moveTo(x, y + h * t); ctx.lineTo(x + w, y + h * t)
+      })
+      ctx.stroke()
+
+      const hs = 13
+      ctx.fillStyle = 'white'
+      ;[[x, y], [x + w, y], [x, y + h], [x + w, y + h]].forEach(([hx, hy]) => {
+        ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs)
+      })
     }
   }
 
-  function handleUp() { draggingRef.current = null }
+  function saveUndo() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    setUndoStack(prev => {
+      const next = [...prev, snapshot]
+      return next.length > 10 ? next.slice(1) : next
+    })
+  }
 
-  function applyCrop() {
-    const img = imgRef.current
-    if (!img || !cropRect || cropRect.w < 20 || cropRect.h < 20) return
-    const { x, y, w, h } = cropRect
-    const tmp = document.createElement('canvas')
-    tmp.width = Math.round(w); tmp.height = Math.round(h)
-    tmp.getContext('2d').drawImage(img, -Math.round(x), -Math.round(y))
-    tmp.toBlob(blob => {
-      if (!blob) return
-      const newImg = new window.Image()
-      newImg.onload = () => {
-        imgRef.current = newImg
-        const canvas = canvasRef.current
-        if (canvas) { canvas.width = Math.round(w); canvas.height = Math.round(h) }
-        setRoutePoints(prev => prev.map(p => ({ x: p.x - x, y: p.y - y })))
-        setHoldMarkers(prev => prev.map(m => ({ x: m.x - x, y: m.y - y })).filter(m => m.x >= 0 && m.y >= 0 && m.x <= w && m.y <= h))
-        setCropRect({ x: 0, y: 0, w, h })
-      }
-      newImg.src = URL.createObjectURL(blob)
-    }, 'image/jpeg', 0.92)
+  function handleUndo() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    setUndoStack(prev => {
+      if (!prev.length) return prev
+      const snapshot = prev[prev.length - 1]
+      canvas.getContext('2d').putImageData(snapshot, 0, 0)
+      return prev.slice(0, -1)
+    })
   }
 
   function resetEditor() {
-    const img = origImgRef.current
-    if (!img) return
-    imgRef.current = img
-    const w = img.naturalWidth, h = img.naturalHeight
     const canvas = canvasRef.current
-    if (canvas) { canvas.width = w; canvas.height = h }
-    setRoutePoints([
-      { x: w * 0.5, y: h * 0.88 },
-      { x: w * 0.5, y: h * 0.62 },
-      { x: w * 0.5, y: h * 0.38 },
-      { x: w * 0.5, y: h * 0.12 },
-    ])
-    setHoldMarkers([])
-    setCropRect({ x: 0, y: 0, w, h })
+    const orig = origPixelDataRef.current
+    if (!canvas || !orig) return
+    canvas.width = orig.width
+    canvas.height = orig.height
+    canvas.getContext('2d').putImageData(orig, 0, 0)
+    setImageSize({ w: orig.width, h: orig.height })
+    setCropRect({ x: 0, y: 0, w: orig.width, h: orig.height })
+    setUndoStack([])
+    setZoom(1)
+    setPanOffset({ x: 0, y: 0 })
+  }
+
+  function paintBrush(relX, relY) {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    const { x: cx, y: cy } = screenToCanvas(relX, relY)
+    const r = brushSizeRef.current
+    const x0 = Math.max(0, Math.floor(cx - r))
+    const y0 = Math.max(0, Math.floor(cy - r))
+    const x1 = Math.min(canvas.width, Math.ceil(cx + r))
+    const y1 = Math.min(canvas.height, Math.ceil(cy + r))
+    const pw = x1 - x0, ph = y1 - y0
+    if (pw <= 0 || ph <= 0) return
+
+    const imageData = ctx.getImageData(x0, y0, pw, ph)
+    const d = imageData.data
+    const r2 = r * r
+
+    if (activeToolRef.current === 'highlight') {
+      const orig = rawPixelDataRef.current
+      if (!orig) return
+      const od = orig.data
+      const cw = canvas.width
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          if ((px - cx) * (px - cx) + (py - cy) * (py - cy) <= r2) {
+            const i = ((py - y0) * pw + (px - x0)) * 4
+            const oi = (py * cw + px) * 4
+            d[i] = od[oi]; d[i + 1] = od[oi + 1]; d[i + 2] = od[oi + 2]
+          }
+        }
+      }
+    } else {
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          if ((px - cx) * (px - cx) + (py - cy) * (py - cy) <= r2) {
+            const i = ((py - y0) * pw + (px - x0)) * 4
+            const gray = Math.round(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114)
+            d[i] = d[i + 1] = d[i + 2] = gray
+          }
+        }
+      }
+    }
+    ctx.putImageData(imageData, x0, y0)
+  }
+
+  function getCropHit(relX, relY) {
+    if (!cropRect) return 'new'
+    const tl = canvasToScreen(cropRect.x, cropRect.y)
+    const br = canvasToScreen(cropRect.x + cropRect.w, cropRect.y + cropRect.h)
+    const x = tl.x, y = tl.y, w = br.x - tl.x, h = br.y - tl.y
+    const hs = 22
+    const corners = [
+      { n: 'tl', cx: x, cy: y }, { n: 'tr', cx: x + w, cy: y },
+      { n: 'bl', cx: x, cy: y + h }, { n: 'br', cx: x + w, cy: y + h },
+    ]
+    const corner = corners.find(c => Math.hypot(c.cx - relX, c.cy - relY) < hs)
+    if (corner) return corner.n
+    if (relX >= x && relX <= x + w && relY >= y && relY <= y + h) return 'move'
+    return 'new'
+  }
+
+  function handlePointerDown(e) {
+    if (e.touches && e.touches.length === 2) {
+      const t1 = e.touches[0], t2 = e.touches[1]
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)
+      pinchRef.current = {
+        startDist: dist,
+        startZoom: zoomRef.current,
+        startPan: { ...panOffsetRef.current },
+        midX: (t1.clientX + t2.clientX) / 2,
+        midY: (t1.clientY + t2.clientY) / 2,
+      }
+      return
+    }
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    const { x: relX, y: relY } = getRelPos(clientX, clientY)
+    const tool = activeToolRef.current
+
+    if (tool === 'highlight' || tool === 'desat') {
+      saveUndo()
+      isBrushingRef.current = true
+      paintBrush(relX, relY)
+    } else if (tool === 'crop') {
+      const hit = getCropHit(relX, relY)
+      const startCrop = hit === 'new'
+        ? (() => { const { x: cx, y: cy } = screenToCanvas(relX, relY); return { x: cx, y: cy, w: 1, h: 1 } })()
+        : (cropRect ? { ...cropRect } : { x: 0, y: 0, w: 1, h: 1 })
+      if (hit === 'new') setCropRect(startCrop)
+      cropDragRef.current = { type: hit, startRelX: relX, startRelY: relY, startCrop }
+    }
+  }
+
+  function handlePointerMove(e) {
+    if (e.touches && e.touches.length === 2 && pinchRef.current) {
+      const t1 = e.touches[0], t2 = e.touches[1]
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)
+      const { startDist, startZoom, startPan, midX, midY } = pinchRef.current
+      const newZoom = Math.max(1, Math.min(4, startZoom * dist / startDist))
+      const el = containerRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const relMidX = midX - rect.left, relMidY = midY - rect.top
+      const zr = newZoom / startZoom
+      setZoom(newZoom)
+      setPanOffset(clampPan(
+        relMidX - (relMidX - startPan.x) * zr,
+        relMidY - (relMidY - startPan.y) * zr,
+        newZoom,
+      ))
+      return
+    }
+
+    const touch = e.touches ? e.touches[0] : null
+    const clientX = touch ? touch.clientX : e.clientX
+    const clientY = touch ? touch.clientY : e.clientY
+    const { x: relX, y: relY } = getRelPos(clientX, clientY)
+
+    if (isBrushingRef.current) {
+      paintBrush(relX, relY)
+      return
+    }
+
+    if (activeToolRef.current === 'crop' && cropDragRef.current) {
+      const { type, startRelX, startRelY, startCrop } = cropDragRef.current
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const cw = canvas.width, ch = canvas.height
+      const MIN = 20
+
+      if (type === 'new') {
+        const { x: cx, y: cy } = screenToCanvas(relX, relY)
+        const { x: sx, y: sy } = screenToCanvas(startRelX, startRelY)
+        setCropRect({
+          x: Math.max(0, Math.min(cx, sx)),
+          y: Math.max(0, Math.min(cy, sy)),
+          w: Math.max(MIN, Math.abs(cx - sx)),
+          h: Math.max(MIN, Math.abs(cy - sy)),
+        })
+      } else if (type === 'move') {
+        const { x: cdx, y: cdy } = screenDeltaToCanvas(relX - startRelX, relY - startRelY)
+        setCropRect({
+          x: Math.max(0, Math.min(cw - startCrop.w, startCrop.x + cdx)),
+          y: Math.max(0, Math.min(ch - startCrop.h, startCrop.y + cdy)),
+          w: startCrop.w, h: startCrop.h,
+        })
+      } else {
+        const n = type
+        const { x: px, y: py } = screenToCanvas(relX, relY)
+        const { x: rx, y: ry, w: rw, h: rh } = startCrop
+        if (n === 'tl') {
+          const nx = Math.max(0, Math.min(px, rx + rw - MIN))
+          const ny = Math.max(0, Math.min(py, ry + rh - MIN))
+          setCropRect({ x: nx, y: ny, w: rx + rw - nx, h: ry + rh - ny })
+        } else if (n === 'tr') {
+          const ny = Math.max(0, Math.min(py, ry + rh - MIN))
+          setCropRect({ x: rx, y: ny, w: Math.min(cw - rx, Math.max(MIN, px - rx)), h: ry + rh - ny })
+        } else if (n === 'bl') {
+          const nx = Math.max(0, Math.min(px, rx + rw - MIN))
+          setCropRect({ x: nx, y: ry, w: rx + rw - nx, h: Math.min(ch - ry, Math.max(MIN, py - ry)) })
+        } else {
+          setCropRect({ x: rx, y: ry, w: Math.min(cw - rx, Math.max(MIN, px - rx)), h: Math.min(ch - ry, Math.max(MIN, py - ry)) })
+        }
+      }
+    }
+  }
+
+  function handlePointerUp() {
+    isBrushingRef.current = false
+    pinchRef.current = null
+    cropDragRef.current = null
+  }
+
+  function applyCrop() {
+    const canvas = canvasRef.current
+    if (!canvas || !cropRect || cropRect.w < 20 || cropRect.h < 20) return
+    const ctx = canvas.getContext('2d')
+    const { x, y, w, h } = cropRect
+    const rx = Math.round(x), ry = Math.round(y), rw = Math.round(w), rh = Math.round(h)
+
+    const croppedData = ctx.getImageData(rx, ry, rw, rh)
+    canvas.width = rw
+    canvas.height = rh
+    ctx.putImageData(croppedData, 0, 0)
+
+    function cropPixelData(ref) {
+      const pd = ref.current
+      if (!pd) return
+      const tmp = document.createElement('canvas')
+      tmp.width = pd.width; tmp.height = pd.height
+      const tmpCtx = tmp.getContext('2d')
+      tmpCtx.putImageData(pd, 0, 0)
+      ref.current = tmpCtx.getImageData(rx, ry, rw, rh)
+    }
+    cropPixelData(origPixelDataRef)
+    cropPixelData(rawPixelDataRef)
+
+    setImageSize({ w: rw, h: rh })
+    setCropRect({ x: 0, y: 0, w: rw, h: rh })
+    setUndoStack([])
+    setZoom(1)
+    setPanOffset({ x: 0, y: 0 })
   }
 
   function getFile() {
     return new Promise((resolve, reject) => {
       const canvas = canvasRef.current
-      const img = imgRef.current
-      if (!canvas || !img) { reject(new Error('editor not ready')); return }
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
-      redraw(true)
+      if (!canvas) { reject(new Error('editor not ready')); return }
       canvas.toBlob(blob => {
         if (!blob) { reject(new Error('export failed')); return }
         resolve(new File([blob], 'photo.jpg', { type: 'image/jpeg' }))
-        requestAnimationFrame(() => redraw(false))
       }, 'image/jpeg', 0.88)
     })
   }
 
   const TOOLS = [
     {
-      key: 'route', label: 'Route',
-      icon: <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4"><path d="M4 16l4-5 3 3 5-9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="4" cy="16" r="2" fill="currentColor"/><circle cx="16" cy="5" r="2" fill="currentColor"/></svg>,
+      key: 'highlight', label: 'Highlight',
+      icon: (
+        <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4">
+          <circle cx="10" cy="10" r="6" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M10 7v6M7 10h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      ),
     },
     {
-      key: 'holds', label: 'Holds',
-      icon: <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4"><circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.5"/><circle cx="10" cy="10" r="3.5" fill="currentColor" opacity="0.65"/></svg>,
+      key: 'desat', label: 'Desat',
+      icon: (
+        <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4">
+          <circle cx="10" cy="10" r="6" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M10 4v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.5"/>
+          <path d="M10 4a6 6 0 0 1 0 12" fill="currentColor" opacity="0.25"/>
+        </svg>
+      ),
     },
     {
       key: 'crop', label: 'Crop',
-      icon: <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4"><path d="M5 2v11h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M2 5h11v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.4"/></svg>,
+      icon: (
+        <svg viewBox="0 0 20 20" fill="none" className="w-4 h-4">
+          <path d="M5 2v11h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          <path d="M2 5h11v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.4"/>
+        </svg>
+      ),
     },
   ]
 
-  const hint = activeTool === 'route'
-    ? 'Drag handles to trace the route. Tap the line to add a point.'
-    : activeTool === 'holds'
-      ? 'Tap to mark holds. Tap again to remove.'
-      : 'Draw or drag to set crop area. Tap Apply to confirm.'
+  const hint = activeTool === 'highlight'
+    ? 'Sweep to restore original color in brush area.'
+    : activeTool === 'desat'
+    ? 'Sweep to convert pixels to grayscale.'
+    : 'Draw or drag to set crop area. Tap Apply to confirm.'
 
   return (
     <div className="flex flex-col gap-3">
       {/* Toolbar */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {TOOLS.map(t => (
           <button
             key={t.key}
@@ -470,37 +648,86 @@ function ImageEditor({ sourceFile, climbColorHex, visible, exportRef }) {
             {t.label}
           </button>
         ))}
-        <button
-          type="button"
-          onClick={resetEditor}
-          className="ml-auto px-3 py-2 rounded-xl text-xs font-semibold bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
-        >
-          Reset
-        </button>
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            type="button"
+            onClick={handleUndo}
+            disabled={!undoStack.length}
+            className="px-3 py-2 rounded-xl text-xs font-semibold bg-zinc-800 text-zinc-400 hover:text-zinc-200 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={resetEditor}
+            className="px-3 py-2 rounded-xl text-xs font-semibold bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            Reset
+          </button>
+        </div>
       </div>
 
-      {/* Canvas */}
-      <div className="relative rounded-xl overflow-hidden bg-zinc-900">
+      {/* Brush size slider */}
+      {(activeTool === 'highlight' || activeTool === 'desat') && (
+        <div className="flex items-center gap-3 px-1">
+          <span className="text-xs text-zinc-500 shrink-0">Size</span>
+          <input
+            type="range"
+            min={10}
+            max={80}
+            value={brushSize}
+            onChange={e => setBrushSize(Number(e.target.value))}
+            className="flex-1 accent-indigo-500"
+          />
+          <span className="text-xs text-zinc-500 w-10 text-right">{brushSize}px</span>
+        </div>
+      )}
+
+      {/* Canvas container */}
+      <div
+        ref={containerRef}
+        className="relative rounded-xl overflow-hidden bg-zinc-900 select-none"
+        style={{
+          aspectRatio: `${imageSize.w} / ${imageSize.h}`,
+          touchAction: 'none',
+          cursor: (activeTool === 'highlight' || activeTool === 'desat') ? 'crosshair' : 'default',
+        }}
+        onMouseDown={handlePointerDown}
+        onMouseMove={handlePointerMove}
+        onMouseUp={handlePointerUp}
+        onMouseLeave={handlePointerUp}
+        onTouchStart={handlePointerDown}
+        onTouchMove={handlePointerMove}
+        onTouchEnd={handlePointerUp}
+      >
+        {/* Image canvas — pixels only, scaled via CSS for zoom/pan */}
         <canvas
           ref={canvasRef}
-          className="w-full block"
-          style={{ touchAction: 'none', cursor: activeTool === 'holds' ? 'crosshair' : 'default' }}
-          onMouseDown={handleDown}
-          onMouseMove={handleMove}
-          onMouseUp={handleUp}
-          onMouseLeave={handleUp}
-          onTouchStart={handleDown}
-          onTouchMove={handleMove}
-          onTouchEnd={handleUp}
+          style={{
+            position: 'absolute',
+            width: `${zoom * 100}%`,
+            height: `${zoom * 100}%`,
+            left: panOffset.x,
+            top: panOffset.y,
+          }}
         />
-        {!imgRef.current && (
-          <div className="absolute inset-0 flex items-center justify-center h-48">
+        {/* Overlay canvas — crop UI, pointer-events:none */}
+        <canvas
+          ref={overlayRef}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+        />
+        {!imageLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />
+          </div>
+        )}
+        {zoom > 1 && (
+          <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full font-mono pointer-events-none">
+            {zoom.toFixed(1)}×
           </div>
         )}
       </div>
 
-      {/* Apply Crop */}
       {activeTool === 'crop' && (
         <button
           type="button"
@@ -592,6 +819,8 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
   const [plannedReset, setPlannedReset] = useState('')
   const [photoFile, setPhotoFile] = useState(null)
   const [photoPreview, setPhotoPreview] = useState(null)
+  const [tagPhotoFile, setTagPhotoFile] = useState(null)
+  const [tagPhotoPreview, setTagPhotoPreview] = useState(null)
   const [processedFile, setProcessedFile] = useState(null)
   const [processedPreview, setProcessedPreview] = useState(null)
   const [climbHint, setClimbHint] = useState('')
@@ -614,15 +843,24 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
     setPhotoPreview(URL.createObjectURL(file))
   }
 
+  function handleTagPhotoChange(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+    setTagPhotoFile(file)
+    setTagPhotoPreview(URL.createObjectURL(file))
+  }
+
   async function analyzePhoto() {
     if (!photoFile) return
     setAnalyzing(true)
     try {
-      const base64 = await fileToBase64(photoFile)
+      const body = { climbImage: await fileToBase64(photoFile), hint: climbHint.trim() }
+      if (tagPhotoFile) body.tagImage = await fileToBase64(tagPhotoFile)
       const res = await fetch('/api/analyze-climb', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64, hint: climbHint.trim() }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) return
       const result = await res.json()
@@ -700,6 +938,21 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
       return
     }
 
+    // Upload tag photo (uses climb id for filename)
+    if (tagPhotoFile && data?.id) {
+      const tagExt = tagPhotoFile.name.split('.').pop()
+      const tagPath = `${zoneId}/${data.id}-tag.${tagExt}`
+      const { error: tagUploadError } = await supabase.storage
+        .from('climb-photos')
+        .upload(tagPath, tagPhotoFile, { upsert: false })
+      if (!tagUploadError) {
+        const { data: { publicUrl: tagUrl } } = supabase.storage.from('climb-photos').getPublicUrl(tagPath)
+        await supabase.from('climbs').update({ tag_photo_url: tagUrl }).eq('id', data.id)
+        onSaved({ ...data, tag_photo_url: tagUrl })
+        return
+      }
+    }
+
     onSaved(data)
   }
 
@@ -741,6 +994,28 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
                 placeholder="Describe which climb (e.g. pink holds left side)"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition"
               />
+              {/* Tag photo upload */}
+              {!tagPhotoFile ? (
+                <label className="flex items-center gap-3 bg-zinc-800/60 border border-dashed border-zinc-700 rounded-xl px-4 py-3 cursor-pointer hover:border-zinc-600 transition-colors">
+                  <span className="text-zinc-500 shrink-0"><PhotoIcon /></span>
+                  <span className="text-sm text-zinc-500">Upload tag photo <span className="text-zinc-600">(optional)</span></span>
+                  <input type="file" accept="image/*" onChange={handleTagPhotoChange} className="sr-only" />
+                </label>
+              ) : (
+                <div className="flex items-center gap-3 bg-zinc-800/60 rounded-xl px-3 py-2.5">
+                  <img src={tagPhotoPreview} alt="Tag" className="w-12 h-12 object-cover rounded-lg shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-zinc-300">Tag photo added</p>
+                    <button
+                      type="button"
+                      onClick={() => { setTagPhotoFile(null); setTagPhotoPreview(null) }}
+                      className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={analyzePhoto}
@@ -750,7 +1025,7 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
               </button>
               <button
                 type="button"
-                onClick={() => { setPhotoFile(null); setPhotoPreview(null); setClimbHint('') }}
+                onClick={() => { setPhotoFile(null); setPhotoPreview(null); setTagPhotoFile(null); setTagPhotoPreview(null); setClimbHint('') }}
                 className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors text-center py-1"
               >
                 Remove photo
@@ -786,6 +1061,7 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
                     type="button"
                     onClick={() => {
                       setPhotoFile(null); setPhotoPreview(null)
+                      setTagPhotoFile(null); setTagPhotoPreview(null)
                       setProcessedFile(null); setProcessedPreview(null)
                       setClimbHint(''); setAnalyzed(false); setActiveTab('info')
                     }}
@@ -906,7 +1182,7 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
               <div className={activeTab === 'edit' ? 'flex flex-col gap-3' : 'hidden'}>
                 <ImageEditor
                   sourceFile={processedFile ?? photoFile}
-                  climbColorHex={climbColor(color) || '#6366f1'}
+                  originalSourceFile={photoFile}
                   visible={activeTab === 'edit'}
                   exportRef={imageEditorExportRef}
                 />

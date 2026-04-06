@@ -9,6 +9,7 @@ import ConfirmModal from '@/app/components/ConfirmModal'
 import { climbColor } from '@/constants/colors'
 import {
   fetchClimbById,
+  fetchZoneById,
   fetchSetterProfile,
   claimClimb,
   unclaimClimb,
@@ -548,6 +549,7 @@ export default function ClimbPage() {
 
   // Core climb state
   const [climb, setClimb] = useState(null)
+  const [gymId, setGymId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
 
@@ -624,11 +626,14 @@ export default function ClimbPage() {
       setMedia(mediaData)
       setLoading(false)
 
-      // Fetch setter profile independently (doesn't block main content)
-      if (climbData.setter_id) {
-        const profile = await fetchSetterProfile(climbData.setter_id)
-        if (profile) setSetter(profile)
-      }
+      // Fetch zone to get gym_id for back navigation, and setter profile
+      const [zoneData] = await Promise.all([
+        fetchZoneById(climbData.zone_id),
+        climbData.setter_id
+          ? fetchSetterProfile(climbData.setter_id).then(p => { if (p) setSetter(p) })
+          : Promise.resolve(),
+      ])
+      if (zoneData?.gym_id) setGymId(zoneData.gym_id)
     }
     if (id) load()
   }, [id])
@@ -773,7 +778,7 @@ export default function ClimbPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur border-b border-zinc-800 flex items-center gap-3 px-4 py-3">
         <button
-          onClick={() => navigate(`/zone/${climb.zone_id}`)}
+          onClick={() => navigate(gymId ? `/gym/${gymId}` : '/dashboard')}
           className="shrink-0 text-zinc-400 hover:text-zinc-100 active:scale-90 transition-all p-0.5 -ml-0.5"
           aria-label="Go back"
         >
@@ -833,6 +838,19 @@ export default function ClimbPage() {
           )}
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
         </div>
+
+        {/* ── Grade tag thumbnail ── */}
+        {climb.tag_photo_url && (
+          <div className="px-4 mt-4 flex items-center gap-3">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Grade Tag</p>
+            <img
+              src={climb.tag_photo_url}
+              alt="Grade tag"
+              onClick={() => setPhotoModalOpen(climb.tag_photo_url)}
+              className="w-14 h-14 object-cover rounded-xl cursor-pointer active:scale-95 transition-transform"
+            />
+          </div>
+        )}
 
         {/* ── Climb info ── */}
         <div className="px-4 mt-5">
