@@ -8,7 +8,8 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
 import useAuth from '@/hooks/useAuth'
-import { fetchUserProfile, fetchUserAscents } from '@/lib/queries'
+import { fetchUserProfile, fetchUserAscents, fetchActiveClimberCount, searchProfiles, fetchProfileStats } from '@/lib/queries'
+import { supabase } from '@/lib/supabase'
 import { GRADE_HEX, V_GRADE_ORDER } from '@/constants/grades'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
@@ -16,6 +17,14 @@ const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700
 function gradeHex(grade) {
   if (!grade) return '#52525b'
   return GRADE_HEX[grade.toUpperCase()] ?? '#52525b'
+}
+
+function gradeRank(grade) {
+  if (!grade) return -1
+  const upper = grade.toUpperCase()
+  if (upper === 'VB') return 0
+  const m = upper.match(/^V(\d+)$/)
+  return m ? parseInt(m[1]) + 1 : -1
 }
 
 const CustomTooltip = ({ active, payload }) => {
@@ -38,12 +47,20 @@ function PencilIcon() {
   )
 }
 
-function gradeRank(grade) {
-  if (!grade) return -1
-  const upper = grade.toUpperCase()
-  if (upper === 'VB') return 0
-  const m = upper.match(/^V(\d+)$/)
-  return m ? parseInt(m[1]) + 1 : -1
+function SearchIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-zinc-600 shrink-0">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+    </svg>
+  )
 }
 
 export default function ProfilePage() {
@@ -52,16 +69,23 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState(null)
   const [lastSessionChart, setLastSessionChart] = useState([])
   const [stats, setStats] = useState({ totalSends: 0, topGrade: null, sessions: 0 })
+  const [activeCount, setActiveCount] = useState(0)
   const [dataLoaded, setDataLoaded] = useState(false)
+
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
 
   useEffect(() => {
     if (!user) return
     async function loadData() {
-      const [profileData, all] = await Promise.all([
+      const [profileData, all, count] = await Promise.all([
         fetchUserProfile(user.id),
         fetchUserAscents(user.id),
+        fetchActiveClimberCount(),
       ])
       setProfile(profileData)
+      setActiveCount(count)
 
       const sends = all.filter(a => a.status === 'sent')
       const topGradeEntry = sends.reduce((best, a) => {
@@ -89,6 +113,28 @@ export default function ProfilePage() {
     }
     loadData()
   }, [user])
+
+  // Debounced search — profiles first, then per-user stats in parallel
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    const timer = setTimeout(async () => {
+      const profiles = await searchProfiles(searchQuery)
+      if (!profiles.length) {
+        setSearchResults([])
+        setSearching(false)
+        return
+      }
+      const statsArr = await Promise.all(profiles.map(p => fetchProfileStats(p.id)))
+      setSearchResults(profiles.map((p, i) => ({ ...p, ...statsArr[i] })))
+      setSearching(false)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   const loading = authLoading || !dataLoaded
 
@@ -142,6 +188,70 @@ export default function ProfilePage() {
           <p className="text-sm text-zinc-500 mt-0.5">@{displayUsername}</p>
         </div>
 
+        {/* Active climbers count + search */}
+        <div className="mx-4 mb-4">
+          <p className="text-xs text-zinc-500 mb-3">
+            <span className="font-semibold text-zinc-400">{activeCount}</span>{' '}
+            {activeCount === 1 ? 'climber' : 'climbers'} active today
+          </p>
+          <div className="relative">
+            <SearchIcon />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search climbers..."
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition"
+            />
+          </div>
+        </div>
+
+        {/* Search results */}
+        {searchQuery.trim() && (
+          <div className="mx-4 mb-4">
+            {searching ? (
+              <div className="flex justify-center py-6">
+                <div className="w-5 h-5 rounded-full border-2 border-zinc-700 border-t-indigo-500 animate-spin" />
+              </div>
+            ) : searchResults.length === 0 ? (
+              <p className="text-sm text-zinc-600 text-center py-4">No climbers found</p>
+            ) : (
+              <ul className="bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden">
+                {searchResults.map((result, i) => (
+                  <li key={result.id} className={`list-none${i > 0 ? ' border-t border-zinc-800/60' : ''}`}>
+                    <button
+                      onClick={() => router.push(`/profile/${result.id}?from=profile`)}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-zinc-800/60 transition-colors"
+                    >
+                      {result.avatar_url ? (
+                        <img
+                          src={result.avatar_url}
+                          alt={result.username}
+                          className="w-9 h-9 rounded-full object-cover bg-zinc-800 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-9 h-9 rounded-full bg-indigo-600/20 flex items-center justify-center shrink-0">
+                          <span className="text-indigo-300 font-bold text-sm leading-none">
+                            {result.username?.[0]?.toUpperCase() ?? '?'}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-zinc-100 truncate">@{result.username}</p>
+                        <p className="text-xs text-zinc-500 mt-0.5">
+                          {result.totalSends} {result.totalSends === 1 ? 'send' : 'sends'}
+                          {result.topGrade ? ` · ${result.topGrade} top` : ''}
+                        </p>
+                      </div>
+                      <ChevronRightIcon />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* Stats summary */}
         <div className="grid grid-cols-3 gap-2 mx-4 mb-4">
           {[
@@ -191,6 +301,19 @@ export default function ProfilePage() {
             <p className="text-zinc-600 text-sm">No sessions logged yet</p>
           </div>
         )}
+
+        {/* Sign Out */}
+        <div className="mx-4 mt-2 mb-4">
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut()
+              router.push('/login')
+            }}
+            className="w-full py-3.5 rounded-2xl bg-zinc-900 border border-zinc-800 text-rose-500 font-semibold text-sm hover:bg-zinc-800 active:scale-[0.98] transition-all"
+          >
+            Sign Out
+          </button>
+        </div>
       </div>
 
       <BottomNav />

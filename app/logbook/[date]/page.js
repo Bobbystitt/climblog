@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import BottomNav from '@/app/components/BottomNav'
 import useAuth from '@/hooks/useAuth'
-import { fetchSessionAscents } from '@/lib/queries'
+import { fetchSessionAscents, fetchClimbTotalsForUser } from '@/lib/queries'
 import { climbColor } from '@/constants/colors'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
@@ -21,6 +21,14 @@ function BackIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-zinc-600 shrink-0">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
     </svg>
   )
 }
@@ -50,6 +58,7 @@ export default function SessionDetailPage() {
   const router = useRouter()
   const { user, loading: authLoading } = useAuth()
   const [ascents, setAscents] = useState([])
+  const [climbTotals, setClimbTotals] = useState({})
   const [dataLoaded, setDataLoaded] = useState(false)
 
   useEffect(() => {
@@ -58,8 +67,18 @@ export default function SessionDetailPage() {
     const start = `${date}T00:00:00.000Z`
     const [y, m, d] = date.split('-').map(Number)
     const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString()
-    fetchSessionAscents(user.id, start, next).then(data => {
+    fetchSessionAscents(user.id, start, next).then(async data => {
       setAscents(data)
+      // Fetch cumulative totals for sent climbs in this session
+      const sentClimbIds = [...new Set(
+        data.filter(a => a.status === 'sent').map(a => a.climbs?.id).filter(Boolean)
+      )]
+      if (sentClimbIds.length > 0) {
+        const totals = await fetchClimbTotalsForUser(user.id, sentClimbIds)
+        const totalsMap = {}
+        for (const t of totals) totalsMap[t.climb_id] = t
+        setClimbTotals(totalsMap)
+      }
       setDataLoaded(true)
     })
   }, [user, date])
@@ -103,9 +122,16 @@ export default function SessionDetailPage() {
             {ascents.map((ascent, index) => {
               const grade = ascent.climbs?.grade
               const color = ascent.climbs?.color
+              const climbId = ascent.climbs?.id
               return (
                 <li key={ascent.id} className={index !== 0 ? 'border-t border-zinc-800/60' : ''}>
-                  <div className="flex items-start gap-3 px-4 py-4">
+                  <button
+                    onClick={() => {
+                      sessionStorage.setItem('climbReturnPath', `/logbook/${date}`)
+                      router.push(`/climb/${climbId}`)
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-4 text-left active:bg-zinc-800/60 transition-colors"
+                  >
                     {/* Colored square — primary climb identifier */}
                     <div
                       className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center"
@@ -115,12 +141,18 @@ export default function SessionDetailPage() {
                     </div>
 
                     <div className="flex-1 min-w-0">
-                      {/* Tries */}
-                      {ascent.tries != null && ascent.tries > 0 && (
+                      {/* Tries — cumulative for sends, session-only for projects */}
+                      {ascent.status === 'sent' && climbTotals[climbId] ? (
+                        <p className="text-xs text-zinc-500">
+                          {climbTotals[climbId].is_flash
+                            ? 'Flashed'
+                            : `Sent in ${climbTotals[climbId].total_tries} total ${climbTotals[climbId].total_tries === 1 ? 'try' : 'tries'}`}
+                        </p>
+                      ) : ascent.tries != null && ascent.tries > 0 ? (
                         <p className="text-xs text-zinc-500">
                           {ascent.tries} {ascent.tries === 1 ? 'try' : 'tries'}
                         </p>
-                      )}
+                      ) : null}
 
                       {/* Star ratings */}
                       {(ascent.difficulty_rating > 0 || ascent.rating > 0) && (
@@ -145,7 +177,9 @@ export default function SessionDetailPage() {
                         <p className="mt-1.5 text-xs text-zinc-500 leading-relaxed">{ascent.notes}</p>
                       )}
                     </div>
-                  </div>
+
+                    <ChevronRightIcon />
+                  </button>
                 </li>
               )
             })}

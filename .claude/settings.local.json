@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(find /c/Users/rober/OneDrive/Desktop/Projects/climblog -type f \\\\\\(-name *.sql -o -name *schema* -o -name *migration* \\\\\\))",
-      "Bash(grep -r 'create table' C:/Users/rober/OneDrive/Desktop/Projects/climblog --include=*.sql)"
+      "Bash(grep -r 'create table' C:/Users/rober/OneDrive/Desktop/Projects/climblog --include=*.sql)",
+      "Bash(node *)",
+      "Bash(npx next *)"
     ]
   }
 }

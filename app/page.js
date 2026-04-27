@@ -12,7 +12,7 @@ export default function RootPage() {
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
-      router.replace(user ? '/dashboard' : '/login')
+      router.replace(user ? '/gym/4561f1e2-5b13-4de9-8197-53642de8b5e0' : '/login')
     })
   }, [router])
 

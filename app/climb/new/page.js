@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
@@ -39,7 +39,7 @@ function PhotoIcon() {
   )
 }
 
-export default function NewClimbPage() {
+function NewClimbPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const zoneId = searchParams.get('zone_id')
@@ -281,5 +281,13 @@ export default function NewClimbPage() {
 
       <BottomNav />
     </div>
+  )
+}
+
+export default function NewClimbPage() {
+  return (
+    <Suspense>
+      <NewClimbPageInner />
+    </Suspense>
   )
 }

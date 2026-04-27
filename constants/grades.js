@@ -11,6 +11,20 @@ export const GRADE_SCALE_MAX = GRADE_SCALE.length - 1
 // Grade labels shown on the gym distribution chart
 export const CHART_GRADES = ['VB', 'V0', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10']
 
+// Rope grades in order
+export const ROPE_GRADES = [
+  '5.6','5.7','5.8','5.9','5.9+',
+  '5.10-','5.10','5.10+',
+  '5.11-','5.11','5.11+',
+  '5.12-','5.12','5.12+',
+  '5.13-','5.13','5.13+',
+  '5.14-','5.14','5.14+',
+  '5.15-','5.15','5.15+',
+]
+
+// Zone disciplines that use rope grades
+export const ROPE_DISCIPLINES = ['Lead', 'Top Rope', 'Autobelay']
+
 // Hex colors for V-grades (VB–V17), used in bar charts
 export const GRADE_HEX = {
   VB: '#15803d',

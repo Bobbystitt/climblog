@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase'
 import BottomNav from '@/app/components/BottomNav'
 import ClimbCard from '@/app/components/ClimbCard'
 import FilterDrawer from '@/app/components/FilterDrawer'
-import { GRADE_SCALE, GRADE_SCALE_MAX } from '@/constants/grades'
+import { GRADE_SCALE, GRADE_SCALE_MAX, ROPE_GRADES } from '@/constants/grades'
 import {
   fetchGymById,
   fetchZonesByGym,
@@ -15,13 +15,18 @@ import {
   fetchUserAscentsByClimbs,
   fetchUserFavorites,
   fetchUserProfile,
+  fetchClimbCommentCounts,
+  fetchClimbVideoCounts,
+  fetchSetterProfiles,
+  fetchClimbFavoriteCounts,
+  fetchClimbUserAggregates,
   toggleFavorite as dbToggleFavorite,
 } from '@/lib/queries'
 
+const GYM_STYLE_OPTIONS = ['Crimpy', 'Slopey', 'Juggy', 'Overhang', 'Slab', 'Pinchy', 'Powerful', 'Balancy']
+
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600', '700'] })
 
-// Prevent the browser and Next.js from auto-restoring scroll position so our
-// manual restoration wins. Safe to run at module level — guarded for SSR.
 if (typeof window !== 'undefined') {
   window.history.scrollRestoration = 'manual'
 }
@@ -40,21 +45,212 @@ function gradeToIdx(grade) {
   return GRADE_SCALE.indexOf(grade.toUpperCase().trim())
 }
 
-function computeClimbStatus(climbId, ascentsMap) {
-  const ascents = ascentsMap[climbId] ?? []
-  const sent = ascents.find(a => a.status === 'sent')
-  if (sent) return sent.tries === 1 ? 'flashed' : 'sent'
-  if (ascents.some(a => a.status === 'project')) return 'project'
-  return 'untouched'
+function gradeRankForSort(grade) {
+  if (!grade) return -1
+  const g = grade.toUpperCase().trim()
+  if (g === 'VB') return 0
+  const vm = g.match(/^V(\d+)$/)
+  if (vm) return parseInt(vm[1]) + 1
+  const rIdx = ROPE_GRADES.indexOf(grade)
+  if (rIdx !== -1) return 100 + rIdx
+  return -1
 }
 
-// ── Icons ─────────────────────────────────────────────────────────────────────
+function computeRotationStatus(climb) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  let isNewRoute = false
+  let expiryStatus = null
+  let daysUntilReset = null
+  if (climb.set_date) {
+    const set = new Date(climb.set_date)
+    set.setHours(0, 0, 0, 0)
+    const daysSinceSet = Math.floor((today - set) / (1000 * 60 * 60 * 24))
+    if (daysSinceSet >= 0 && daysSinceSet <= 7) isNewRoute = true
+  }
+  if (climb.planned_reset_date) {
+    const reset = new Date(climb.planned_reset_date)
+    reset.setHours(0, 0, 0, 0)
+    const diff = Math.floor((reset - today) / (1000 * 60 * 60 * 24))
+    if (diff < 0) { expiryStatus = 'overdue'; daysUntilReset = diff }
+    else if (diff <= 7) { expiryStatus = 'expiring'; daysUntilReset = diff }
+  }
+  return { isNewRoute, expiryStatus, daysUntilReset }
+}
 
-function BackIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+function computeClimbStatus(climbId, ascentsMap) {
+  // ascentsMap values are sorted ascending by climbed_at (from fetchUserAscentsByClimbs)
+  const ascents = ascentsMap[climbId] ?? []
+  if (ascents.length === 0) return 'untouched'
+  const hasSent = ascents.some(a => a.status === 'sent')
+  if (!hasSent) return 'project'
+  // Flash only if the very first ever ascent was a send with 1 try
+  const first = ascents[0]
+  return (first.status === 'sent' && first.tries === 1) ? 'flashed' : 'sent'
+}
+
+function applyFilters(climbs, { gradeRange, tags, favorites, status, excludeRepeats, setters, gymTags, routeStatus }, ascentsMap, favoritedIds) {
+  return climbs
+    .filter(c => {
+      if (gradeRange[0] !== 0 || gradeRange[1] !== GRADE_SCALE_MAX) {
+        const idx = gradeToIdx(c.grade)
+        if (idx === -1 || idx < gradeRange[0] || idx > gradeRange[1]) return false
+      }
+      if (tags.length > 0) {
+        const ct = (c.tags ?? []).map(t => t.toLowerCase())
+        if (!tags.some(t => ct.includes(t.toLowerCase()))) return false
+      }
+      if (gymTags.length > 0) {
+        const ct = (c.tags ?? []).map(t => t.toLowerCase())
+        if (!gymTags.some(t => ct.includes(t.toLowerCase()))) return false
+      }
+      if (favorites && !favoritedIds.has(c.id)) return false
+      if (setters.length > 0 && !setters.includes(c.setter_id)) return false
+      if (status !== 'All') {
+        const s = computeClimbStatus(c.id, ascentsMap)
+        if (status === 'Flashed'   && s !== 'flashed')  return false
+        if (status === 'Sent'      && s !== 'sent')      return false
+        if (status === 'Project'   && s !== 'project')   return false
+        if (status === 'Untouched' && s !== 'untouched') return false
+      }
+      if (excludeRepeats) {
+        const s = computeClimbStatus(c.id, ascentsMap)
+        if (s === 'sent' || s === 'flashed') return false
+      }
+      if (routeStatus && routeStatus.length > 0) {
+        const match = routeStatus.some(f => {
+          if (f === 'new') return c.isNewRoute === true
+          if (f === 'expiring') return c.expiryStatus === 'expiring' || c.expiryStatus === 'overdue'
+          return false
+        })
+        if (!match) return false
+      }
+      return true
+    })
+    .sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
+}
+
+function applySortToClimbs(climbs, sort, gymFavCountMap, gymAggMap, gymCommentCountMapAll) {
+  const c = [...climbs]
+  switch (sort) {
+    case 'Most Logged':
+      return c.sort((a, b) => (gymAggMap[b.id]?.total ?? 0) - (gymAggMap[a.id]?.total ?? 0))
+    case 'Most Unfinished':
+      return c.sort((a, b) => (gymAggMap[b.id]?.project ?? 0) - (gymAggMap[a.id]?.project ?? 0))
+    case 'Most Commented':
+      return c.sort((a, b) => (gymCommentCountMapAll[b.id] ?? 0) - (gymCommentCountMapAll[a.id] ?? 0))
+    case 'Most Favorited':
+      return c.sort((a, b) => (gymFavCountMap[b.id] ?? 0) - (gymFavCountMap[a.id] ?? 0))
+    case 'Most Sent':
+      return c.sort((a, b) => (gymAggMap[b.id]?.sent ?? 0) - (gymAggMap[a.id]?.sent ?? 0))
+    case 'Most Flashed':
+      return c.sort((a, b) => (gymAggMap[b.id]?.flashed ?? 0) - (gymAggMap[a.id]?.flashed ?? 0))
+    case 'Newest':
+      return c.sort((a, b) => (b.set_date ?? '') > (a.set_date ?? '') ? 1 : -1)
+    case 'Oldest':
+      return c.sort((a, b) => (a.set_date ?? '') > (b.set_date ?? '') ? 1 : -1)
+    case 'Hardest':
+      return c.sort((a, b) => gradeRankForSort(b.grade ?? b.rope_grade) - gradeRankForSort(a.grade ?? a.rope_grade))
+    case 'Easiest':
+      return c.sort((a, b) => gradeRankForSort(a.grade ?? a.rope_grade) - gradeRankForSort(b.grade ?? b.rope_grade))
+    default: // 'Most Popular'
+      return c.sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
+  }
+}
+
+// ── Icons ──────────────────────────────────────────────────────────────────────
+
+function StarIcon({ filled }) {
+  return filled ? (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
+      <path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.006 5.404.434c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.434 2.082-5.005z" clipRule="evenodd" />
     </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-7 h-7">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+    </svg>
+  )
+}
+
+function StarRating({ value, onChange, color = 'text-yellow-400' }) {
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button key={n} type="button" onClick={() => onChange(n === value ? 0 : n)}
+          className={`transition-colors active:scale-90 ${n <= value ? color : 'text-zinc-700'}`}>
+          <StarIcon filled={n <= value} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function LogAscentModal({ climbId, currentRepeatCount, onClose, onSaved }) {
+  const [attempts, setAttempts] = useState(1)
+  const [difficulty, setDifficulty] = useState(0)
+  const [rating, setRating] = useState(0)
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSaving(false); setError('Not logged in.'); return }
+
+    const { error: insertError } = await supabase.from('ascents').insert({
+      user_id: user.id, climb_id: climbId, tries: attempts, status: 'sent',
+      notes: notes.trim() || null, climbed_at: new Date().toISOString(),
+      difficulty_rating: difficulty || null, rating: rating || null,
+    })
+    if (insertError) { setError(insertError.message); setSaving(false); return }
+
+    const { error: rpcError } = await supabase.rpc('increment_repeat_count', { climb_id: climbId })
+    if (rpcError) { await supabase.from('climbs').update({ repeat_count: (currentRepeatCount ?? 0) + 1 }).eq('id', climbId) }
+
+    setSaving(false)
+    onSaved(attempts)
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/60" onClick={onClose} />
+      <div className="fixed bottom-0 left-0 right-0 z-50 bg-zinc-900 rounded-t-3xl border-t border-zinc-800 pb-safe">
+        <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full bg-zinc-700" /></div>
+        <div className="px-5 pt-3 pb-6 flex flex-col gap-6 overflow-y-auto max-h-[80vh]">
+          <h2 className="text-lg font-bold text-zinc-100">Log Ascent</h2>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Attempts</p>
+            <div className="flex items-center gap-4">
+              <button type="button" onClick={() => setAttempts(a => Math.max(1, a - 1))}
+                className="w-10 h-10 rounded-full bg-zinc-800 hover:bg-zinc-700 active:scale-90 transition-all flex items-center justify-center text-zinc-300 text-xl font-light">−</button>
+              <span className="w-8 text-center text-xl font-bold text-zinc-100">{attempts}</span>
+              <button type="button" onClick={() => setAttempts(a => a + 1)}
+                className="w-10 h-10 rounded-full bg-zinc-800 hover:bg-zinc-700 active:scale-90 transition-all flex items-center justify-center text-zinc-300 text-xl font-light">+</button>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Difficulty</p>
+            <StarRating value={difficulty} onChange={setDifficulty} color="text-orange-400" />
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Rating</p>
+            <StarRating value={rating} onChange={setRating} color="text-yellow-400" />
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Notes</p>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="How'd it go? Key moves, beta…" rows={3}
+              className="bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 resize-none transition" />
+          </div>
+          {error && <p className="text-sm text-red-400 bg-red-400/10 rounded-xl px-4 py-3 -mt-2">{error}</p>}
+          <button type="button" onClick={handleSave} disabled={saving}
+            className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none transition-all text-white font-semibold text-base shadow-lg shadow-indigo-900/40">
+            {saving ? 'Saving…' : 'Save Ascent'}
+          </button>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -75,121 +271,156 @@ function FilterIcon() {
   )
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+function ChevronIcon({ open }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"
+      className={`w-4 h-4 text-zinc-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+    </svg>
+  )
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function GymPage() {
   const { id } = useParams()
   const router = useRouter()
   const heroInputRef = useRef(null)
-  const heroRef = useRef(null)
-  // Holds parsed sessionStorage state between the mount effect and the
-  // restore effect — avoids reading sessionStorage twice.
-  const savedStateRef = useRef(null)
-  // Prevents the restore effect from firing more than once.
-  const hasRestored = useRef(false)
+  const heroRef     = useRef(null)
 
-  const [gym, setGym] = useState(null)
-  const [zones, setZones] = useState([])
-  const [allClimbs, setAllClimbs] = useState([])
-  const [ascentsMap, setAscentsMap] = useState({})
-  const [favoritedIds, setFavoritedIds] = useState(new Set())
-  const [userId, setUserId] = useState(null)
-  const [isAdmin, setIsAdmin] = useState(false)
+  // Stable refs used inside async callbacks to avoid stale closures.
+  const userIdRef       = useRef(null)
+  const allClimbsRef    = useRef([])       // mirror of allClimbs state
+  const zonesRef        = useRef([])       // mirror of zones for use in loadClimbsForDisciplines
+  const zoneRequestedRef = useRef(new Set()) // zones whose data has been requested
+  const pendingRestoreRef = useRef(null)   // { tab, expandedZoneId?, climbId? }
+
+  // ── Core state ──
+  const [gym, setGym]               = useState(null)
+  const [zones, setZones]           = useState([])
+  const [allClimbs, setAllClimbs]   = useState([])
   const [zoneClimbCount, setZoneClimbCount] = useState({})
   const [zoneHasNew, setZoneHasNew] = useState({})
-  const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState('zones')
-  const [heroUrl, setHeroUrl] = useState(null)
+  const [loading, setLoading]       = useState(true)
+  const [heroUrl, setHeroUrl]       = useState(null)
   const [uploadingHero, setUploadingHero] = useState(false)
   const [showStickyHeader, setShowStickyHeader] = useState(false)
-  const [highlightId, setHighlightId] = useState(null)
+  const [userId, setUserId]         = useState(null)
+  const [isAdmin, setIsAdmin]       = useState(false)
 
-  // Filter state
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  // ── Tab ──
+  const [activeTab, setActiveTab] = useState('zones')
+
+  // ── Accordion ──
+  const [expandedZoneId, setExpandedZoneId] = useState(null)
+  // { [zoneId]: { commentCounts: {climbId: n}, videoCounts: {climbId: n} } }
+  const [zoneDataCache, setZoneDataCache]   = useState({})
+  const [zoneLoadingSet, setZoneLoadingSet] = useState(new Set())
+  const [highlightClimbId, setHighlightClimbId] = useState(null)
+
+  // ── Log ascent modal ──
+  const [logModalClimb, setLogModalClimb] = useState(null)
+  const [toast, setToast]               = useState(false)
+
+  // ── Shared user data ──
+  const [ascentsMap, setAscentsMap]     = useState({})
+  const [favoritedIds, setFavoritedIds] = useState(new Set())
+
+  // ── Filter state ──
+  const [drawerOpen, setDrawerOpen]       = useState(false)
   const [activeGradeRange, setActiveGradeRange] = useState([0, GRADE_SCALE_MAX])
-  const [activeTags, setActiveTags] = useState([])
+  const [activeTags, setActiveTags]       = useState([])
   const [activeFavorites, setActiveFavorites] = useState(false)
-  const [activeStatus, setActiveStatus] = useState('All')
+  const [activeStatus, setActiveStatus]   = useState('All')
+  const [activeExcludeRepeats, setActiveExcludeRepeats] = useState(false)
+  const [activeSetters, setActiveSetters] = useState([])
+  const [activeGymTags, setActiveGymTags] = useState([])
+  const [activeSort, setActiveSort] = useState('Most Popular')
+  const [activeRouteStatus, setActiveRouteStatus] = useState([])
+  const [activeDisciplines, setActiveDisciplines] = useState([])
+  const [setterProfiles, setSetterProfiles] = useState([])
 
-  // ── Read saved page state from sessionStorage on mount ──────────────────────
-  // Must be inside useEffect (sessionStorage access rule).
+  // ── Sort By data maps ──
+  const [gymFavCountMap, setGymFavCountMap] = useState({})
+  const [gymAggMap, setGymAggMap] = useState({})
+  const [gymCommentCountMapAll, setGymCommentCountMapAll] = useState({})
+
+  // ── Read saved state from sessionStorage on mount ──────────────────────────
   useEffect(() => {
     if (!id) return
+
     try {
       const raw = sessionStorage.getItem(`gymPageState_${id}`)
-      if (!raw) return
-      const state = JSON.parse(raw)
-      sessionStorage.removeItem(`gymPageState_${id}`)
-      savedStateRef.current = state
-      hasRestored.current = false
-      // Restore tab immediately so the correct tab renders once content loads.
-      if (state.tab) setActiveTab(state.tab)
+      if (raw) {
+        const state = JSON.parse(raw)
+        sessionStorage.removeItem(`gymPageState_${id}`)
+        pendingRestoreRef.current = state
+        if (state.tab) setActiveTab(state.tab)
+        if (state.expandedZoneId) setExpandedZoneId(state.expandedZoneId)
+      }
+    } catch {}
+
+    try {
+      const rawFilters = sessionStorage.getItem(`gymFilters_${id}`)
+      if (rawFilters) {
+        const saved = JSON.parse(rawFilters)
+        if (Array.isArray(saved.gradeRange) && saved.gradeRange.length === 2) setActiveGradeRange(saved.gradeRange)
+        if (Array.isArray(saved.tags)) setActiveTags(saved.tags)
+        if (typeof saved.favorites === 'boolean') setActiveFavorites(saved.favorites)
+        if (typeof saved.status === 'string') setActiveStatus(saved.status)
+        if (typeof saved.excludeRepeats === 'boolean') setActiveExcludeRepeats(saved.excludeRepeats)
+        if (Array.isArray(saved.setters)) setActiveSetters(saved.setters)
+        if (Array.isArray(saved.gymTags)) setActiveGymTags(saved.gymTags)
+        if (Array.isArray(saved.routeStatus)) setActiveRouteStatus(saved.routeStatus)
+        if (typeof saved.sort === 'string') setActiveSort(saved.sort)
+        if (Array.isArray(saved.disciplines)) setActiveDisciplines(saved.disciplines)
+      }
     } catch {}
   }, [id])
 
-  // ── Restore scroll + highlight ───────────────────────────────────────────────
-  // Fires when:
-  //   • loading is done (content arrays are populated)
-  //   • activeTab matches the saved tab (correct tab content is in the DOM)
-  //   • the relevant content array is non-empty (elements exist to scroll to)
-  //   • we haven't already restored this session
+  // ── Scroll restore: Climbs tab — fires when allClimbs arrives ──────────────
   useEffect(() => {
-    const state = savedStateRef.current
-    if (!state || !state.selectedId || hasRestored.current) return
+    const pending = pendingRestoreRef.current
+    if (!pending || pending.tab !== 'climbs' || !pending.climbId) return
+    if (allClimbs.length === 0) return
 
-    if (loading) return
-    if (activeTab !== state.tab) return
-
-    const contentReady = state.tab === 'zones' ? zones.length > 0 : allClimbs.length > 0
-    if (!contentReady) return
-
-    hasRestored.current = true
-    savedStateRef.current = null
+    pendingRestoreRef.current = null
 
     requestAnimationFrame(() => {
-      const prefix = state.tab === 'zones' ? 'zone-' : 'climb-'
-      const el = document.getElementById(`${prefix}${state.selectedId}`)
-
+      const el = document.getElementById(`climb-${pending.climbId}`)
       if (el) {
-        const rect = el.getBoundingClientRect()
-
-        // Walk up the DOM to find the actual scroll container — the first
-        // ancestor whose scrollHeight exceeds its clientHeight.
-        let scrollContainer = el.parentElement
-        while (scrollContainer && scrollContainer !== document.documentElement) {
-          const style = window.getComputedStyle(scrollContainer)
-          const overflow = style.overflowY
-          if (scrollContainer.scrollHeight > scrollContainer.clientHeight &&
-              (overflow === 'auto' || overflow === 'scroll' || overflow === 'overlay')) {
-            break
-          }
-          scrollContainer = scrollContainer.parentElement
-        }
-        if (!scrollContainer || scrollContainer === document.documentElement) {
-          scrollContainer = document.documentElement
-        }
-
-        const absoluteTop = rect.top + scrollContainer.scrollTop - 100
-
-        // Disable auto scroll restoration immediately before our assignment so
-        // Next.js cannot reset it between frames.
+        const top = el.getBoundingClientRect().top + window.scrollY - 110
         window.history.scrollRestoration = 'manual'
-
-        // Double rAF: first frame sets the position, second frame re-asserts it
-        // to override any reset Next.js applies after the initial paint.
-        scrollContainer.scrollTop = absoluteTop
-        requestAnimationFrame(() => {
-          scrollContainer.scrollTop = absoluteTop
-        })
+        window.scrollTo({ top, behavior: 'instant' })
+        requestAnimationFrame(() => window.scrollTo({ top, behavior: 'instant' }))
       }
-
-      setHighlightId(state.selectedId)
-      setTimeout(() => setHighlightId(null), 1200)
+      setHighlightClimbId(pending.climbId)
+      setTimeout(() => setHighlightClimbId(null), 1200)
     })
-  }, [loading, activeTab, zones, allClimbs])
+  }, [allClimbs])
 
-  // ── IntersectionObserver on hero — depends on `gym` so it runs after the
-  //    hero div is in the DOM (the loading spinner skips it). ─────────────────
+  // ── Scroll restore: Zones tab — fires when accordion zone data arrives ─────
+  useEffect(() => {
+    const pending = pendingRestoreRef.current
+    if (!pending || pending.tab !== 'zones' || !pending.climbId) return
+    if (!zoneDataCache[pending.expandedZoneId]) return
+
+    pendingRestoreRef.current = null
+
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`climb-${pending.climbId}`)
+      if (el) {
+        const top = el.getBoundingClientRect().top + window.scrollY - 110
+        window.history.scrollRestoration = 'manual'
+        window.scrollTo({ top, behavior: 'instant' })
+        requestAnimationFrame(() => window.scrollTo({ top, behavior: 'instant' }))
+      }
+      setHighlightClimbId(pending.climbId)
+      setTimeout(() => setHighlightClimbId(null), 1200)
+    })
+  }, [zoneDataCache])
+
+  // ── IntersectionObserver on hero ───────────────────────────────────────────
   useEffect(() => {
     const el = heroRef.current
     if (!el) return
@@ -201,7 +432,7 @@ export default function GymPage() {
     return () => observer.disconnect()
   }, [gym])
 
-  // ── Data fetch ──────────────────────────────────────────────────────────────
+  // ── Initial data fetch ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!id) return
     localStorage.setItem('savedPath', `/gym/${id}`)
@@ -216,77 +447,149 @@ export default function GymPage() {
       setGym(gymData)
       setHeroUrl(gymData?.hero_image_url ?? null)
       setZones(zonesArr)
-      if (user) setUserId(user.id)
+      zonesRef.current = zonesArr
 
       if (user) {
+        userIdRef.current = user.id
+        setUserId(user.id)
         const profile = await fetchUserProfile(user.id)
         if (profile?.role === 'admin') setIsAdmin(true)
       }
 
-      if (zonesArr.length > 0) {
-        const zoneIds = zonesArr.map(z => z.id)
-        const zoneNameMap = {}
-        zonesArr.forEach(z => { zoneNameMap[z.id] = z.name ?? '' })
-
-        const rawClimbs = await fetchClimbsByZones(zoneIds)
-        const climbs = rawClimbs.map(c => ({
-          ...c,
-          zoneName: zoneNameMap[c.zone_id] ?? '',
-        }))
-        setAllClimbs(climbs)
-
-        const cutoff = new Date(Date.now() - SEVEN_DAYS_MS)
-        const counts = {}
-        const hasNew = {}
-        climbs.forEach(c => {
-          counts[c.zone_id] = (counts[c.zone_id] ?? 0) + 1
-          if (c.set_date && new Date(c.set_date) >= cutoff) {
-            hasNew[c.zone_id] = true
-          }
-        })
-        setZoneClimbCount(counts)
-        setZoneHasNew(hasNew)
-
-        if (user && climbs.length > 0) {
-          const climbIds = climbs.map(c => c.id)
-          const [ascentsArr, favsArr] = await Promise.all([
-            fetchUserAscentsByClimbs(user.id, climbIds),
-            fetchUserFavorites(user.id, climbIds),
-          ])
-          const aMap = {}
-          ascentsArr.forEach(a => {
-            if (!aMap[a.climb_id]) aMap[a.climb_id] = []
-            aMap[a.climb_id].push(a)
-          })
-          setAscentsMap(aMap)
-          setFavoritedIds(new Set(favsArr.map(f => f.climb_id)))
-        }
-      }
-
+      await loadClimbsForDisciplines([])
       setLoading(false)
     }
 
     fetchData()
+    // Fetch setter/admin profiles for the filter drawer (independent of main load)
+    fetchSetterProfiles().then(profiles => setSetterProfiles(profiles))
   }, [id])
 
-  // ── Navigation: save state before leaving ──────────────────────────────────
-  // sessionStorage writes are fine in event handlers (not render-time).
+  // ── Trigger accordion data load when a zone is expanded ───────────────────
+  // Climbs are already in allClimbs; this only fetches comment & video counts.
+  useEffect(() => {
+    if (!expandedZoneId || loading) return
+    if (zoneRequestedRef.current.has(expandedZoneId)) return
+    loadZoneData(expandedZoneId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedZoneId, loading])
 
-  function handleZonePress(zoneId) {
-    sessionStorage.setItem(`gymPageState_${id}`, JSON.stringify({ tab: 'zones', selectedId: zoneId }))
-    router.push(`/zone/${zoneId}`)
+  async function loadZoneData(zoneId) {
+    if (zoneRequestedRef.current.has(zoneId)) return
+    zoneRequestedRef.current.add(zoneId)
+
+    const zoneClimbs = allClimbsRef.current.filter(c => c.zone_id === zoneId)
+    const climbIds = zoneClimbs.map(c => c.id)
+
+    if (climbIds.length === 0) {
+      setZoneDataCache(prev => ({ ...prev, [zoneId]: { commentCounts: {}, videoCounts: {} } }))
+      return
+    }
+
+    setZoneLoadingSet(prev => new Set([...prev, zoneId]))
+
+    const [commentRows, videoRows] = await Promise.all([
+      fetchClimbCommentCounts(climbIds),
+      fetchClimbVideoCounts(climbIds),
+    ])
+
+    const commentCounts = {}
+    commentRows.forEach(r => { commentCounts[r.climb_id] = (commentCounts[r.climb_id] ?? 0) + 1 })
+
+    const videoCounts = {}
+    videoRows.forEach(r => { videoCounts[r.climb_id] = (videoCounts[r.climb_id] ?? 0) + 1 })
+
+    setZoneDataCache(prev => ({ ...prev, [zoneId]: { commentCounts, videoCounts } }))
+    setZoneLoadingSet(prev => { const next = new Set(prev); next.delete(zoneId); return next })
   }
 
-  // Called by the + button on ClimbCard (onLogAscent prop).
-  function handleClimbPress(climb) {
-    sessionStorage.setItem(`gymPageState_${id}`, JSON.stringify({ tab: 'climbs', selectedId: climb.id }))
-    router.push(`/climb/${climb.id}`)
+  // ── Climb loader — called on initial load and every Apply press ───────────
+
+  async function loadClimbsForDisciplines(disciplinesFilter) {
+    const allZones = zonesRef.current
+    if (allZones.length === 0) return
+
+    const matchingZones = disciplinesFilter.length > 0
+      ? allZones.filter(z => disciplinesFilter.includes(z.discipline))
+      : allZones
+
+    const zoneIds = matchingZones.map(z => z.id)
+    const zoneNameMap = {}
+    allZones.forEach(z => { zoneNameMap[z.id] = z.name ?? '' })
+
+    const rawClimbs = zoneIds.length > 0 ? await fetchClimbsByZones(zoneIds) : []
+    const climbs = rawClimbs.map(c => ({ ...c, zoneName: zoneNameMap[c.zone_id] ?? '', ...computeRotationStatus(c) }))
+
+    allClimbsRef.current = climbs
+    setAllClimbs(climbs)
+
+    // Reset zone-level caches so expanded zones re-fetch counts for the new set
+    zoneRequestedRef.current = new Set()
+    setZoneDataCache({})
+
+    const cutoff = new Date(Date.now() - SEVEN_DAYS_MS)
+    const counts = {}
+    const hasNew = {}
+    climbs.forEach(c => {
+      counts[c.zone_id] = (counts[c.zone_id] ?? 0) + 1
+      if (c.set_date && new Date(c.set_date) >= cutoff) hasNew[c.zone_id] = true
+    })
+    setZoneClimbCount(counts)
+    setZoneHasNew(hasNew)
+
+    const climbIds = climbs.map(c => c.id)
+
+    if (climbIds.length > 0) {
+      fetchClimbFavoriteCounts(climbIds).then(favRows => {
+        const favMap = {}
+        favRows.forEach(r => { favMap[r.climb_id] = (favMap[r.climb_id] ?? 0) + 1 })
+        setGymFavCountMap(favMap)
+      })
+      fetchClimbUserAggregates(climbIds).then(aggRows => {
+        const aggMap = {}
+        aggRows.forEach(r => {
+          if (!aggMap[r.climb_id]) aggMap[r.climb_id] = { total: 0, sent: 0, flashed: 0, project: 0 }
+          aggMap[r.climb_id].total += 1
+          if (r.best_status === 'sent' || r.best_status === 'flashed') aggMap[r.climb_id].sent += 1
+          if (r.is_flash) aggMap[r.climb_id].flashed += 1
+          if (r.best_status === 'project') aggMap[r.climb_id].project += 1
+        })
+        setGymAggMap(aggMap)
+      })
+      fetchClimbCommentCounts(climbIds).then(commentRows => {
+        const commentMap = {}
+        commentRows.forEach(r => { commentMap[r.climb_id] = (commentMap[r.climb_id] ?? 0) + 1 })
+        setGymCommentCountMapAll(commentMap)
+      })
+    } else {
+      setGymFavCountMap({})
+      setGymAggMap({})
+      setGymCommentCountMapAll({})
+    }
+
+    const uid = userIdRef.current
+    if (uid && climbIds.length > 0) {
+      const [ascentsArr, favsArr] = await Promise.all([
+        fetchUserAscentsByClimbs(uid, climbIds),
+        fetchUserFavorites(uid, climbIds),
+      ])
+      const aMap = {}
+      ascentsArr.forEach(a => {
+        if (!aMap[a.climb_id]) aMap[a.climb_id] = []
+        aMap[a.climb_id].push(a)
+      })
+      setAscentsMap(aMap)
+      setFavoritedIds(new Set(favsArr.map(f => f.climb_id)))
+    } else {
+      setAscentsMap({})
+      setFavoritedIds(new Set())
+    }
   }
 
-  // Saves state for any click on a climb card (grade badge, text row, or + button).
-  // Uses capture phase so it fires before ClimbCard's internal router.push calls.
-  function handleClimbCardCapture(climbId) {
-    sessionStorage.setItem(`gymPageState_${id}`, JSON.stringify({ tab: 'climbs', selectedId: climbId }))
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  function handleZoneToggle(zoneId) {
+    setExpandedZoneId(prev => (prev === zoneId ? null : zoneId))
   }
 
   async function handleToggleFavorite(climbId) {
@@ -317,37 +620,60 @@ export default function GymPage() {
     }
   }
 
-  function handleApplyFilters({ gradeRange, tags, favorites, status }) {
+  function handleApplyFilters({ gradeRange, tags, favorites, status, excludeRepeats, setters, gymTags, routeStatus, sort, disciplines }) {
     setActiveGradeRange(gradeRange)
     setActiveTags(tags)
     setActiveFavorites(favorites)
     setActiveStatus(status)
+    setActiveExcludeRepeats(excludeRepeats)
+    setActiveSetters(setters)
+    setActiveGymTags(gymTags)
+    setActiveRouteStatus(routeStatus ?? [])
+    setActiveSort(sort ?? 'Most Popular')
+    setActiveDisciplines(disciplines ?? [])
+    try {
+      sessionStorage.setItem(`gymFilters_${id}`, JSON.stringify({ gradeRange, tags, favorites, status, excludeRepeats, setters, gymTags, routeStatus: routeStatus ?? [], sort: sort ?? 'Most Popular', disciplines: disciplines ?? [] }))
+    } catch {}
+    // Always run a fresh DB query — discipline filtering happens at the query level.
+    // After the reload, re-trigger zone data for any currently-expanded zone.
+    loadClimbsForDisciplines(disciplines ?? []).then(() => {
+      if (expandedZoneId) loadZoneData(expandedZoneId)
+    })
   }
 
-  const hasActiveFilters = activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX
-    || activeTags.length > 0 || activeFavorites || activeStatus !== 'All'
-
-  // Filtered + sorted climbs
-  const filteredClimbs = allClimbs
-    .filter(c => {
-      if (activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX) {
-        const idx = gradeToIdx(c.grade)
-        if (idx === -1 || idx < activeGradeRange[0] || idx > activeGradeRange[1]) return false
-      }
-      if (activeTags.length > 0) {
-        const ct = (c.tags ?? []).map(t => t.toLowerCase())
-        if (!activeTags.some(t => ct.includes(t.toLowerCase()))) return false
-      }
-      if (activeFavorites && !favoritedIds.has(c.id)) return false
-      if (activeStatus !== 'All') {
-        const s = computeClimbStatus(c.id, ascentsMap)
-        if (activeStatus === 'Flashed' && s !== 'flashed') return false
-        if (activeStatus === 'Sent' && s !== 'sent') return false
-        if (activeStatus === 'Projects' && s !== 'project') return false
-      }
-      return true
+  function handleLogAscentSaved(climb, tries) {
+    setAscentsMap(prev => {
+      const existing = prev[climb.id] ?? []
+      // Append at end — new ascent is the latest, so ascending order is preserved
+      return { ...prev, [climb.id]: [...existing, { status: 'sent', tries, climb_id: climb.id, climbed_at: new Date().toISOString() }] }
     })
-    .sort((a, b) => (b.repeat_count ?? 0) - (a.repeat_count ?? 0))
+    setAllClimbs(prev => prev.map(c =>
+      c.id === climb.id ? { ...c, repeat_count: (c.repeat_count ?? 0) + 1 } : c
+    ))
+    setLogModalClimb(null)
+    setToast(true)
+    setTimeout(() => setToast(false), 2500)
+  }
+
+  // ── Derived values ─────────────────────────────────────────────────────────
+
+  const hasActiveFilters = activeGradeRange[0] !== 0 || activeGradeRange[1] !== GRADE_SCALE_MAX
+    || activeTags.length > 0 || activeFavorites || activeStatus !== 'All' || activeExcludeRepeats
+    || activeSetters.length > 0 || activeGymTags.length > 0
+    || activeRouteStatus.length > 0 || activeSort !== 'Most Popular'
+    || activeDisciplines.length > 0
+
+  const filters = { gradeRange: activeGradeRange, tags: activeTags, favorites: activeFavorites, status: activeStatus, excludeRepeats: activeExcludeRepeats, setters: activeSetters, gymTags: activeGymTags, routeStatus: activeRouteStatus }
+
+  const filteredClimbs = applySortToClimbs(
+    applyFilters(allClimbs, filters, ascentsMap, favoritedIds),
+    activeSort,
+    gymFavCountMap,
+    gymAggMap,
+    gymCommentCountMapAll,
+  )
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   if (loading && !gym) {
     return (
@@ -358,9 +684,8 @@ export default function GymPage() {
   }
 
   return (
-    <div data-scroll-container className={`${poppins.className} min-h-screen bg-zinc-950 text-zinc-100`}>
+    <div className={`${poppins.className} min-h-screen bg-zinc-950 text-zinc-100`}>
 
-      {/* Keyframe for the highlight glow animation */}
       <style>{`
         @keyframes gym-card-highlight {
           0%   { box-shadow: none; }
@@ -371,14 +696,10 @@ export default function GymPage() {
         .gym-card-highlight { animation: gym-card-highlight 1.2s ease forwards; }
       `}</style>
 
-      {/* ── Fixed slim header — slides down when hero scrolls out of view ── */}
+      {/* ── Sliding sticky header ── */}
       <div
         style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          zIndex: 40,
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40,
           transform: showStickyHeader ? 'translateY(0)' : 'translateY(-100%)',
           opacity: showStickyHeader ? 1 : 0,
           pointerEvents: showStickyHeader ? 'auto' : 'none',
@@ -386,10 +707,16 @@ export default function GymPage() {
         }}
         className="bg-zinc-950/95 backdrop-blur-sm border-b border-zinc-800"
       >
-        <div className="flex items-center justify-between px-4 h-14">
-          <h2 className="font-bold text-base text-zinc-100 truncate flex-1 mr-3">
+        <div className="flex items-center gap-2 px-4 h-14">
+          <h2 className="font-bold text-base text-zinc-100 truncate flex-1 min-w-0">
             {gym?.name ?? '…'}
           </h2>
+          <button
+            onClick={() => router.push(`/gym/${id}/details`)}
+            className="shrink-0 text-blue-400 text-sm font-medium active:opacity-60 transition-opacity"
+          >
+            Gym Details
+          </button>
           <div className="relative shrink-0">
             <button
               onClick={() => setDrawerOpen(true)}
@@ -407,20 +734,11 @@ export default function GymPage() {
 
       {/* ── Hero image ── */}
       <div ref={heroRef} className="relative w-full" style={{ aspectRatio: '16/9', minHeight: 200 }}>
-        {heroUrl ? (
-          <img src={heroUrl} alt={gym?.name} className="absolute inset-0 w-full h-full object-cover" />
-        ) : (
-          <div className="absolute inset-0 bg-zinc-900" />
-        )}
+        {heroUrl
+          ? <img src={heroUrl} alt={gym?.name} className="absolute inset-0 w-full h-full object-cover" />
+          : <div className="absolute inset-0 bg-zinc-900" />
+        }
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
-
-        <button
-          onClick={() => router.push('/dashboard')}
-          className="absolute top-4 left-4 z-10 bg-black/40 backdrop-blur-sm text-white rounded-full p-2 active:scale-90 transition-all"
-          aria-label="Go back"
-        >
-          <BackIcon />
-        </button>
 
         {isAdmin && (
           <>
@@ -439,12 +757,18 @@ export default function GymPage() {
           </>
         )}
 
-        <div className="absolute bottom-0 left-0 right-0 px-4 pb-4">
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 flex items-end justify-between gap-3">
           <h1 className="text-2xl font-bold text-white drop-shadow-lg">{gym?.name ?? '…'}</h1>
+          <button
+            onClick={() => router.push(`/gym/${id}/details`)}
+            className="shrink-0 text-blue-400 text-sm font-medium pb-1 active:opacity-60 transition-opacity drop-shadow"
+          >
+            Gym Details
+          </button>
         </div>
       </div>
 
-      {/* ── Tab toggle — shifts down when fixed header appears ── */}
+      {/* ── Tab toggle ── */}
       <div
         className="sticky z-20 bg-zinc-950/95 backdrop-blur-sm border-b border-zinc-800 px-4 py-3 transition-all duration-200"
         style={{ top: showStickyHeader ? 56 : 0 }}
@@ -465,59 +789,121 @@ export default function GymPage() {
         </div>
       </div>
 
-      {/* ── Scrollable content ── */}
+      {/* ── Content ── */}
       <div className="pb-28">
 
-        {/* ── Zones tab ── */}
+        {/* ── Zones tab: accordion ── */}
         {activeTab === 'zones' && (
           loading ? (
-            <div className="flex flex-col gap-3 px-4 pt-2">
+            <div className="flex flex-col gap-2 px-4 pt-3">
               {[...Array(4)].map((_, i) => (
-                <div key={i} className="h-20 rounded-2xl bg-zinc-900 animate-pulse" />
+                <div key={i} className="h-[68px] rounded-2xl bg-zinc-900 animate-pulse" />
               ))}
             </div>
           ) : zones.length === 0 ? (
             <p className="text-center text-zinc-600 text-sm py-12">No zones yet.</p>
           ) : (
-            <div className="flex flex-col gap-2 px-4 pt-2">
-              {zones.map(zone => (
-                <button
-                  key={zone.id}
-                  id={`zone-${zone.id}`}
-                  type="button"
-                  onClick={() => handleZonePress(zone.id)}
-                  className={`w-full flex items-center gap-3 bg-zinc-900 hover:bg-zinc-800 active:scale-[0.99] transition-all rounded-2xl px-4 py-4 text-left ${
-                    highlightId === zone.id ? 'gym-card-highlight' : ''
-                  }`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-lg font-bold text-zinc-100 truncate">{zone.name}</p>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      {zoneClimbCount[zone.id] ?? 0} {(zoneClimbCount[zone.id] ?? 0) === 1 ? 'climb' : 'climbs'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {zone.discipline && (
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${DISCIPLINE_BADGE[zone.discipline] ?? 'bg-zinc-700/50 text-zinc-400'}`}>
-                        {zone.discipline}
-                      </span>
+            <div className="flex flex-col gap-2 px-4 pt-3">
+              {zones.map(zone => {
+                const isOpen         = expandedZoneId === zone.id
+                const isLoadingCounts = zoneLoadingSet.has(zone.id)
+                const zoneData       = zoneDataCache[zone.id]
+                const totalCount     = zoneClimbCount[zone.id] ?? 0
+
+                // Climbs for this zone come from the already-fetched allClimbs.
+                const zoneClimbs    = allClimbs.filter(c => c.zone_id === zone.id)
+                const filteredZone  = zoneData
+                  ? applyFilters(zoneClimbs, filters, ascentsMap, favoritedIds)
+                  : []
+
+                return (
+                  <div key={zone.id} id={`zone-${zone.id}`} className="rounded-2xl overflow-hidden bg-zinc-900">
+
+                    {/* Zone header */}
+                    <button
+                      type="button"
+                      onClick={() => handleZoneToggle(zone.id)}
+                      className={`w-full flex items-center gap-3 px-4 py-4 text-left transition-colors ${
+                        isOpen ? 'bg-zinc-800' : 'hover:bg-zinc-800/60 active:bg-zinc-800'
+                      }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-base font-bold text-zinc-100 truncate">{zone.name}</p>
+                        <p className="text-xs text-zinc-500 mt-0.5">
+                          {isOpen && zoneData && hasActiveFilters
+                            ? `${filteredZone.length} of ${totalCount} climbs`
+                            : `${totalCount} ${totalCount === 1 ? 'climb' : 'climbs'}`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {zone.discipline && (
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${DISCIPLINE_BADGE[zone.discipline] ?? 'bg-zinc-700/50 text-zinc-400'}`}>
+                            {zone.discipline}
+                          </span>
+                        )}
+                        {zoneHasNew[zone.id] && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/25">
+                            New
+                          </span>
+                        )}
+                        <ChevronIcon open={isOpen} />
+                      </div>
+                    </button>
+
+                    {/* Expanded content */}
+                    {isOpen && (
+                      <div className="border-t border-zinc-800">
+                        {isLoadingCounts ? (
+                          <div className="flex flex-col gap-2 px-4 py-3">
+                            {[...Array(3)].map((_, i) => (
+                              <div key={i} className="h-14 rounded-xl bg-zinc-800 animate-pulse" />
+                            ))}
+                          </div>
+                        ) : filteredZone.length === 0 ? (
+                          <p className="text-center text-zinc-600 text-sm py-8">
+                            {hasActiveFilters ? 'No climbs match your filters.' : 'No climbs in this zone.'}
+                          </p>
+                        ) : (
+                          <ul>
+                            {filteredZone.map((climb, i) => (
+                              <div
+                                key={climb.id}
+                                id={`climb-${climb.id}`}
+                                className={highlightClimbId === climb.id ? 'gym-card-highlight' : ''}
+                                onClickCapture={() => {
+                                  sessionStorage.setItem(
+                                    `gymPageState_${id}`,
+                                    JSON.stringify({ tab: 'zones', expandedZoneId: zone.id, climbId: climb.id })
+                                  )
+                                }}
+                              >
+                                <ClimbCard
+                                  climb={climb}
+                                  climbStatus={computeClimbStatus(climb.id, ascentsMap)}
+                                  isFavorited={favoritedIds.has(climb.id)}
+                                  onLogAscent={c => setLogModalClimb(c)}
+                                  onToggleFavorite={handleToggleFavorite}
+                                  showBorder={i !== 0}
+                                  videoCount={zoneData?.videoCounts[climb.id] ?? 0}
+                                  commentCount={zoneData?.commentCounts[climb.id] ?? 0}
+                                />
+                              </div>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
-                    {zoneHasNew[zone.id] && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/25">
-                        New
-                      </span>
-                    )}
                   </div>
-                </button>
-              ))}
+                )
+              })}
             </div>
           )
         )}
 
-        {/* ── Climbs tab ── */}
+        {/* ── Climbs tab: flat list ── */}
         {activeTab === 'climbs' && (
           loading ? (
-            <div className="flex flex-col gap-0 pt-2">
+            <div className="flex flex-col gap-0 pt-3">
               {[...Array(6)].map((_, i) => (
                 <div key={i} className="h-16 bg-zinc-900 animate-pulse mx-4 rounded-xl mb-2" />
               ))}
@@ -532,14 +918,19 @@ export default function GymPage() {
                 <div
                   key={climb.id}
                   id={`climb-${climb.id}`}
-                  className={highlightId === climb.id ? 'gym-card-highlight' : ''}
-                  onClickCapture={() => handleClimbCardCapture(climb.id)}
+                  className={highlightClimbId === climb.id ? 'gym-card-highlight' : ''}
+                  onClickCapture={() => {
+                    sessionStorage.setItem(
+                      `gymPageState_${id}`,
+                      JSON.stringify({ tab: 'climbs', climbId: climb.id })
+                    )
+                  }}
                 >
                   <ClimbCard
                     climb={climb}
                     climbStatus={computeClimbStatus(climb.id, ascentsMap)}
                     isFavorited={favoritedIds.has(climb.id)}
-                    onLogAscent={handleClimbPress}
+                    onLogAscent={c => setLogModalClimb(c)}
                     onToggleFavorite={handleToggleFavorite}
                     showBorder={i !== 0}
                   />
@@ -556,11 +947,40 @@ export default function GymPage() {
         onClose={() => setDrawerOpen(false)}
         onApply={handleApplyFilters}
         activeGradeRange={activeGradeRange}
-        activeTags={activeTags}
+        activeTags={[]}
         activeFavorites={activeFavorites}
         activeStatus={activeStatus}
-        activeRouteStatus={[]}
+        activeRouteStatus={activeRouteStatus}
+        activeExcludeRepeats={activeExcludeRepeats}
+        activeSetters={activeSetters}
+        activeGymTags={activeGymTags}
+        activeSort={activeSort}
+        activeDisciplines={activeDisciplines}
+        setterProfiles={setterProfiles}
+        gymStyleOptions={GYM_STYLE_OPTIONS}
+        statusOptions={['All', 'Sent', 'Flashed', 'Project', 'Untouched']}
+        showStyle={false}
+        showRouteStatus={true}
+        showDisciplines={true}
       />
+
+      {logModalClimb && (
+        <LogAscentModal
+          climbId={logModalClimb.id}
+          currentRepeatCount={logModalClimb.repeat_count ?? 0}
+          onClose={() => setLogModalClimb(null)}
+          onSaved={(tries) => handleLogAscentSaved(logModalClimb, tries)}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-zinc-800 border border-zinc-700 rounded-2xl px-5 py-3 flex items-center gap-2 shadow-xl">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-green-400 shrink-0">
+            <path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clipRule="evenodd" />
+          </svg>
+          <span className="text-sm font-medium text-zinc-100">Ascent logged!</span>
+        </div>
+      )}
 
       <BottomNav />
     </div>

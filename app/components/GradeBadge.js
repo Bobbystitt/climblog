@@ -16,13 +16,16 @@ export default function GradeBadge({ grade, color, size = 'md', className = '' }
     ? 'w-11 h-11 rounded-xl'
     : 'w-14 h-14 rounded-2xl'
 
+  const gradeStr = grade || '?'
+  const textSize = gradeStr.length >= 5 ? 'text-[10px]' : gradeStr.length === 4 ? 'text-xs' : 'text-sm'
+
   return (
     <div
       className={`${sizeClasses} flex items-center justify-center ${className}`}
       style={{ backgroundColor: climbColor(color) }}
     >
-      <span className="text-white font-bold text-sm leading-none">
-        {grade || '?'}
+      <span className={`text-white font-bold ${textSize} leading-none`}>
+        {gradeStr}
       </span>
     </div>
   )

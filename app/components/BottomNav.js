@@ -1,8 +1,11 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
+import { supabase } from '@/lib/supabase'
+import { fetchUnreadNotificationCount } from '@/lib/queries'
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600'] })
 
@@ -42,22 +45,61 @@ function ProfileIcon({ filled }) {
   )
 }
 
+function GymIcon({ filled }) {
+  return filled ? (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+      <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 005.06-1.01.75.75 0 00.42-.643 4.875 4.875 0 00-6.957-4.611 8.586 8.586 0 011.71 5.157v.003z" />
+    </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-6 h-6">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+    </svg>
+  )
+}
+
 const TABS = [
-  { label: 'Home',     href: '/dashboard', Icon: HomeIcon,     match: (p) => ['/', '/dashboard', '/gym', '/zone', '/climb'].some((s) => p === s || p.startsWith(s + '/')) },
+  { label: 'Home',     href: '/dashboard', Icon: HomeIcon,     match: (p) => !p.includes('/presence') && ['/', '/dashboard', '/gym', '/zone', '/climb'].some((s) => p === s || p.startsWith(s + '/')) },
   { label: 'Logbook',  href: '/logbook',   Icon: LogbookIcon,  match: (p) => p.startsWith('/logbook') },
+  { label: 'Gym',      href: '/gym',       Icon: GymIcon,      match: (p) => p.includes('/presence') },
   { label: 'Profile',  href: '/profile',   Icon: ProfileIcon,  match: (p) => p.startsWith('/profile') },
 ]
 
 export default function BottomNav({ onNavigate }) {
   const pathname = usePathname()
   const router = useRouter()
+  const [unreadCount, setUnreadCount] = useState(0)
+
+  useEffect(() => {
+    let channel = null
+    async function init() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      setUnreadCount(await fetchUnreadNotificationCount(user.id))
+      channel = supabase
+        .channel(`notifications-badge-${user.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${user.id}` }, () => {
+          fetchUnreadNotificationCount(user.id).then(c => setUnreadCount(c))
+        })
+        .subscribe()
+    }
+    init()
+    return () => { if (channel) supabase.removeChannel(channel) }
+  }, [])
 
   function handleTabClick(e, href, label) {
     if (label === 'Home') {
       e.preventDefault()
       const saved = localStorage.getItem('savedPath')
-      const dest = saved ?? '/dashboard'
+      const dest = saved ?? '/gym/4561f1e2-5b13-4de9-8197-53642de8b5e0'
       if (saved) localStorage.setItem('resumeActive', '1')
+      if (onNavigate) onNavigate(dest)
+      else router.push(dest)
+    } else if (label === 'Gym') {
+      e.preventDefault()
+      const saved = localStorage.getItem('savedPath') ?? ''
+      const m = saved.match(/^\/gym\/([^/]+)/)
+      const gymId = m ? m[1] : null
+      const dest = gymId ? `/gym/${gymId}/presence` : '/dashboard'
       if (onNavigate) onNavigate(dest)
       else router.push(dest)
     } else if (onNavigate) {
@@ -80,7 +122,18 @@ export default function BottomNav({ onNavigate }) {
                 active ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
               }`}
             >
-              <Icon filled={active} />
+              {label === 'Gym' ? (
+                <div className="relative">
+                  <Icon filled={active} />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1.5 min-w-[15px] h-[15px] rounded-full bg-rose-500 flex items-center justify-center text-[9px] font-bold text-white leading-none px-0.5">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <Icon filled={active} />
+              )}
               <span className={`text-[10px] font-medium ${active ? 'text-indigo-400' : 'text-zinc-500'}`}>
                 {label}
               </span>

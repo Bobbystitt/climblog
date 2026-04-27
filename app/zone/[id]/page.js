@@ -329,12 +329,21 @@ export default function ZonePage() {
           climbIds.length > 0 ? fetchUserFavorites(user.id, climbIds) : Promise.resolve([]),
         ])
 
-        const statusMap = {}
+        // ascentData is sorted ascending by climbed_at (from fetchUserAscentsByClimbs)
+        // Group into per-climb arrays, then derive status using first-ascent flash logic
+        const climbAscentsMap = {}
         for (const a of ascentData) {
-          const s = rawAscentStatus(a)
-          const existing = statusMap[a.climb_id]
-          if (!existing || STATUS_PRIORITY[s] > STATUS_PRIORITY[existing]) {
-            statusMap[a.climb_id] = s
+          if (!climbAscentsMap[a.climb_id]) climbAscentsMap[a.climb_id] = []
+          climbAscentsMap[a.climb_id].push(a)
+        }
+        const statusMap = {}
+        for (const [climbId, climbAscents] of Object.entries(climbAscentsMap)) {
+          const hasSent = climbAscents.some(a => a.status === 'sent')
+          if (!hasSent) {
+            statusMap[climbId] = 'project'
+          } else {
+            const first = climbAscents[0]
+            statusMap[climbId] = (first.status === 'sent' && first.tries === 1) ? 'flashed' : 'sent'
           }
         }
         setAscents(statusMap)
@@ -524,9 +533,13 @@ export default function ZonePage() {
           currentRepeatCount={modalClimb.repeat_count ?? 0}
           onClose={() => setModalClimb(null)}
           onSaved={(tries) => {
-            const newStatus = tries === 1 ? 'flashed' : 'sent'
             setAscents(prev => {
               const existing = prev[modalClimb.id]
+              // If prior attempts existed (project/sent/flashed), this send cannot be a flash.
+              // Flash only when climbing untouched for the very first time in 1 try.
+              const newStatus = existing
+                ? (existing === 'flashed' ? 'flashed' : 'sent')
+                : (tries === 1 ? 'flashed' : 'sent')
               if (!existing || STATUS_PRIORITY[newStatus] > STATUS_PRIORITY[existing]) {
                 return { ...prev, [modalClimb.id]: newStatus }
               }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Poppins } from 'next/font/google'
 import { supabase } from '@/lib/supabase'
-import { GRADE_SCALE } from '@/constants/grades'
+import { GRADE_SCALE, ROPE_GRADES, ROPE_DISCIPLINES } from '@/constants/grades'
 import { COLOR_OPTIONS, climbColor } from '@/constants/colors'
 import {
   fetchZoneById,
@@ -96,12 +96,12 @@ function ResetConfirmModal({ onCancel, onConfirm, resetting }) {
 
 // ─── Grade Drum Picker ────────────────────────────────────────────────────────
 
-function GradePicker({ value, onChange }) {
+function GradePicker({ value, onChange, grades }) {
   const containerRef = useRef(null)
   const ITEM_HEIGHT = 44
 
   useEffect(() => {
-    const idx = GRADE_SCALE.indexOf(value)
+    const idx = grades.indexOf(value)
     if (idx !== -1 && containerRef.current) {
       containerRef.current.scrollTop = idx * ITEM_HEIGHT
     }
@@ -110,8 +110,8 @@ function GradePicker({ value, onChange }) {
   function handleScroll() {
     if (!containerRef.current) return
     const idx = Math.round(containerRef.current.scrollTop / ITEM_HEIGHT)
-    const clamped = Math.max(0, Math.min(GRADE_SCALE.length - 1, idx))
-    onChange(GRADE_SCALE[clamped])
+    const clamped = Math.max(0, Math.min(grades.length - 1, idx))
+    onChange(grades[clamped])
   }
 
   return (
@@ -127,7 +127,7 @@ function GradePicker({ value, onChange }) {
         className="h-full overflow-y-auto scroll-smooth"
         style={{ scrollSnapType: 'y mandatory', paddingTop: 44, paddingBottom: 44 }}
       >
-        {GRADE_SCALE.map((g) => (
+        {grades.map((g) => (
           <div
             key={g}
             style={{ scrollSnapAlign: 'center', height: ITEM_HEIGHT }}
@@ -811,6 +811,8 @@ function processImageCanvas(file, colorProfile) {
 function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
   const [color, setColor] = useState('')
   const [grade, setGrade] = useState(GRADE_SCALE[2]) // V1 default
+  const [ropeGrade, setRopeGrade] = useState(ROPE_GRADES[3]) // 5.9 default
+  const [climbName, setClimbName] = useState('')
   const [gradePickerKey, setGradePickerKey] = useState(0)
   const [discipline, setDiscipline] = useState(zoneDiscipline || 'Boulder')
   const [tags, setTags] = useState([])
@@ -867,7 +869,7 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
       if (result.color && COLOR_OPTIONS.some(o => o.value === result.color)) {
         setColor(result.color)
       }
-      if (result.grade && GRADE_SCALE.includes(result.grade)) {
+      if (result.grade && GRADE_SCALE.includes(result.grade) && !ROPE_DISCIPLINES.includes(discipline)) {
         setGrade(result.grade)
         setGradePickerKey(k => k + 1)
       }
@@ -918,9 +920,12 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
       photoUrl = publicUrl
     }
 
+    const isRope = ROPE_DISCIPLINES.includes(discipline)
     const climbData = {
       zone_id: zoneId,
-      grade,
+      grade: isRope ? null : grade,
+      rope_grade: isRope ? ropeGrade : null,
+      name: isRope ? (climbName.trim() || null) : null,
       color,
       tags,
       description: description || null,
@@ -1092,12 +1097,36 @@ function AddClimbSheet({ zoneId, zoneDiscipline, onClose, onSaved }) {
                 </div>
 
                 {/* Grade */}
-                <div>
-                  <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">
-                    Grade — <span className="normal-case font-bold text-zinc-200">{grade}</span>
-                  </p>
-                  <GradePicker key={gradePickerKey} value={grade} onChange={setGrade} />
-                </div>
+                {(() => {
+                  const isRope = ROPE_DISCIPLINES.includes(discipline)
+                  return (
+                    <div>
+                      <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                        Grade — <span className="normal-case font-bold text-zinc-200">{isRope ? ropeGrade : grade}</span>
+                      </p>
+                      {isRope
+                        ? <GradePicker key={`rope-${gradePickerKey}-${discipline}`} grades={ROPE_GRADES} value={ropeGrade} onChange={setRopeGrade} />
+                        : <GradePicker key={`boulder-${gradePickerKey}-${discipline}`} grades={GRADE_SCALE} value={grade} onChange={setGrade} />
+                      }
+                    </div>
+                  )
+                })()}
+
+                {/* Climb Name — rope disciplines only */}
+                {ROPE_DISCIPLINES.includes(discipline) && (
+                  <div>
+                    <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                      Climb Name <span className="normal-case font-normal text-zinc-600">(optional)</span>
+                    </p>
+                    <input
+                      type="text"
+                      value={climbName}
+                      onChange={e => setClimbName(e.target.value)}
+                      placeholder="e.g. The Crimson Route"
+                      className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition"
+                    />
+                  </div>
+                )}
 
                 {/* Discipline */}
                 <div>
@@ -1349,7 +1378,10 @@ export default function ManageZonePage() {
                 />
                 {/* Grade + tags */}
                 <div className="flex-1 min-w-0">
-                  <span className="text-sm font-bold text-zinc-100 mr-2">{climb.grade}</span>
+                  <span className="text-sm font-bold text-zinc-100 mr-2">{climb.rope_grade ?? climb.grade}</span>
+                  {climb.name && (
+                    <span className="text-xs text-zinc-400 mr-2">{climb.name}</span>
+                  )}
                   {(climb.tags ?? []).length > 0 && (
                     <span className="text-xs text-zinc-500">{climb.tags.join(', ')}</span>
                   )}
